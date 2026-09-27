@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import type { DecisionCandidateRead, PlanRead } from '../types/planning';
+import React, { useState, useEffect, useRef } from 'react';
+import type { DecisionCandidateRead, PlanRead, PlanTransitionRead } from '../types/planning';
 import type { ProposedItineraryItem, ProposedItinerary } from '../utils/itineraryBuilder';
 import {
   formatCurrency,
@@ -7,7 +7,11 @@ import {
   recalculateItinerary,
   humanizeCandidateReasons,
   getTradeOffNote,
+  findTransitionBetween,
+  resolveStopLocation,
+  travelMinutesForItems,
 } from '../utils/itineraryBuilder';
+import { evaluateProposedTransitions } from '../api/planning';
 import {
   IconArrowRight,
   IconClock,
@@ -20,6 +24,16 @@ import {
   IconX,
 } from './Icons';
 import { TransitionBadge } from './TransitionBadge';
+
+/** Combine a proposed stop's HH:MM slot with the plan's calendar date into an ISO instant. */
+function toIsoTimestamp(baseDate: Date, hhmm?: string): string | null {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(':').map((v) => parseInt(v, 10));
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  const d = new Date(baseDate);
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
+}
 
 interface ProposedPlanProps {
   plan: PlanRead;
@@ -56,12 +70,81 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
   const [swappingIndex, setSwappingIndex] = useState<number | null>(null);
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [customTweak, setCustomTweak] = useState('');
+  const [transitions, setTransitions] = useState<PlanTransitionRead[]>([]);
+  // Travel minutes already folded into the current schedule, so re-applying the
+  // same transitions is a no-op and the schedule/transition cycle settles.
+  const appliedTravelRef = useRef<string>('');
 
   useEffect(() => {
     setItinerary(initialItinerary);
+    appliedTravelRef.current = '';
   }, [initialItinerary]);
 
   const groupSize = plan.context?.group_size || 1;
+
+  // Mobility between proposed stops. A proposal is not persisted yet, so transitions
+  // are requested for the visible stop sequence rather than read from the plan.
+  const stopSignature = itinerary.items
+    .map((it) => `${resolveStopLocation(it) || ''}|${it.startTime || ''}|${it.endTime || ''}`)
+    .join('~');
+
+  useEffect(() => {
+    const baseDate = plan.context?.start_time ? new Date(plan.context.start_time) : new Date();
+
+    const stops = itinerary.items
+      .map((it) => {
+        const location = resolveStopLocation(it);
+        if (!location) return null;
+        return {
+          name: it.candidate.name,
+          location,
+          start_time: toIsoTimestamp(baseDate, it.startTime),
+          end_time: toIsoTimestamp(baseDate, it.endTime),
+          estimated_cost: it.costNumber,
+        };
+      })
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+
+    if (stops.length < 2) {
+      setTransitions([]);
+      return;
+    }
+
+    let cancelled = false;
+    evaluateProposedTransitions(plan.id, stops, undefined, groupSize)
+      .then((res) => {
+        if (cancelled) return;
+        const next = res.transitions || [];
+        setTransitions(next);
+
+        // Reserve the real travel time before the schedule is judged feasible.
+        // Durations come from the M15 transitions themselves; legs with an unknown
+        // duration contribute nothing, and M15 still reports those windows honestly.
+        setItinerary((prev) => {
+          const travel = travelMinutesForItems(prev.items, next);
+          const signature = travel.join(',');
+          if (signature === appliedTravelRef.current) return prev;
+          appliedTravelRef.current = signature;
+          return recalculateItinerary(
+            prev.items,
+            allCandidates,
+            budgetMax,
+            plan.understanding,
+            prev.tradeOffSummary ?? null,
+            travel
+          );
+        });
+      })
+      .catch((err) => {
+        // Mobility is additive context: a lookup failure must not break the proposal.
+        console.error('Failed to load proposed transitions:', err);
+        if (!cancelled) setTransitions([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [plan.id, stopSignature, groupSize, plan.context?.start_time]);
 
   // Swap an item in slot index with an alternative candidate
   const handleSwap = (slotIndex: number, newCandidate: DecisionCandidateRead) => {
@@ -74,7 +157,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
       rationale: humanizeCandidateReasons(newCandidate, budgetMax, groupSize, plan.understanding),
     };
 
-    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary);
+    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary, travelMinutesForItems(updatedItems, transitions));
     setItinerary(recalculated);
     setSwappingIndex(null);
   };
@@ -82,7 +165,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
   // Remove an item from the proposed itinerary
   const handleRemove = (slotIndex: number) => {
     const updatedItems = itinerary.items.filter((_, idx) => idx !== slotIndex);
-    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary);
+    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary, travelMinutesForItems(updatedItems, transitions));
     setItinerary(recalculated);
     if (swappingIndex === slotIndex) {
       setSwappingIndex(null);
@@ -99,7 +182,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
       rationale: humanizeCandidateReasons(candidate, budgetMax, groupSize, plan.understanding),
     };
     const updatedItems = [...itinerary.items, newItem];
-    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary);
+    const recalculated = recalculateItinerary(updatedItems, allCandidates, budgetMax, plan.understanding, itinerary.tradeOffSummary, travelMinutesForItems(updatedItems, transitions));
     setItinerary(recalculated);
     setShowAddMenu(false);
   };
@@ -254,6 +337,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
             const isLast = idx === itinerary.items.length - 1;
             const stepNum = String(idx + 1).padStart(2, '0');
             const categoryName = item.candidate.category.toUpperCase();
+            const nextTransition = findTransitionBetween(item, itinerary.items[idx + 1], transitions);
 
             return (
               <article key={item.candidate.option_id} className={`journey-entry ${isLast ? 'last' : ''}`}>
@@ -423,9 +507,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
                     </div>
                   )}
                   {/* Mobility Transition to Next Stop */}
-                  {!isLast && plan.transitions && plan.transitions[idx] && (
-                    <TransitionBadge transition={plan.transitions[idx]} />
-                  )}
+                  {!isLast && nextTransition && <TransitionBadge transition={nextTransition} />}
                 </div>
               </article>
             );

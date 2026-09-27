@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Sequence
@@ -22,11 +23,160 @@ from app.domain.entities.planning.transition import ItineraryFeasibility, PlanTr
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class StopSequencePoint:
+    """A single ordered stop in a proposed itinerary, independent of plan persistence.
+
+    A proposed itinerary is assembled before any `PlanItem` is persisted, so mobility
+    between stops must be evaluable from location + timing alone.
+    """
+
+    location: str
+    name: str = ""
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    estimated_cost: Decimal | None = None
+
+
 class MobilityPlanningService:
     """Evaluates physical transport feasibility between itinerary stops in a plan."""
 
     def __init__(self, mobility_service: MobilityService) -> None:
         self._mobility_service = mobility_service
+
+    async def evaluate_stop_sequence(
+        self,
+        stops: Sequence[StopSequencePoint],
+        party_size: int = 1,
+        preferred_modes: list[TransportMode] | None = None,
+    ) -> list[PlanTransition]:
+        """Compute mobility transitions across an ordered stop sequence.
+
+        Used for proposed itineraries that have not yet been persisted as `PlanItem`s.
+        """
+        points = [s for s in stops if s.location and s.location.strip()]
+        if len(points) < 2:
+            return []
+
+        transitions: list[PlanTransition] = []
+        for a, b in zip(points, points[1:], strict=False):
+            transition = await self._build_transition(
+                origin=a.location.strip(),
+                destination=b.location.strip(),
+                from_name=a.name,
+                to_name=b.name,
+                departure_time=a.end_time or a.start_time,
+                arrival_time=b.start_time or b.end_time,
+                party_size=party_size,
+                preferred_modes=preferred_modes or [],
+            )
+            if transition is not None:
+                transitions.append(transition)
+        return transitions
+
+    async def _build_transition(
+        self,
+        origin: str,
+        destination: str,
+        from_name: str,
+        to_name: str,
+        departure_time: datetime | None,
+        arrival_time: datetime | None,
+        party_size: int,
+        preferred_modes: list[TransportMode],
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> PlanTransition | None:
+        """Query M14 for one leg and map the result onto a `PlanTransition`.
+
+        Returns None when both stops are at the same location (no travel leg needed).
+        Provider failures degrade to an unknown-cost transition rather than propagating.
+        """
+        if origin.lower() == destination.lower():
+            return None
+
+        req = MobilityRequirement(
+            origin=origin,
+            destination=destination,
+            departure_time=departure_time,
+            arrival_time=arrival_time,
+            party_size=party_size,
+            preferred_modes=preferred_modes,
+        )
+
+        try:
+            options = await self._mobility_service.find_options_for_requirement(req)
+        except Exception as e:
+            logger.error(
+                "Error querying mobility options between %s and %s: %s",
+                origin,
+                destination,
+                e,
+                exc_info=True,
+            )
+            options = []
+
+        if not options:
+            # Unknown remains unknown: no provider verified this leg, so no fare is claimed.
+            return PlanTransition(
+                from_location=origin,
+                to_location=destination,
+                departure_time=departure_time,
+                arrival_time=arrival_time,
+                mode=TransportMode.OTHER,
+                provider_id="unknown",
+                provider_name="Transport",
+                cost=None,
+                cost_known=False,
+                summary=f"Travel from {origin} to {destination}",
+                is_feasible=True,
+            )
+
+        primary = self._select_primary_option(options, preferred_modes)
+
+        is_feasible = True
+        feasibility_issue = None
+        gap_start = window_start if window_start is not None else departure_time
+        gap_end = window_end if window_end is not None else arrival_time
+        if gap_start and gap_end:
+            available_mins = int((gap_end - gap_start).total_seconds() // 60)
+            if primary.duration_minutes is not None and primary.duration_minutes > available_mins:
+                is_feasible = False
+                feasibility_issue = (
+                    f"Travel time ({primary.duration_minutes} min via {primary.provider_name}) "
+                    f"exceeds available window ({available_mins} min) between '{from_name}' and '{to_name}'."
+                )
+
+        leg_dep = departure_time
+        leg_arr = arrival_time
+        if leg_dep is None and leg_arr is not None and primary.duration_minutes:
+            leg_dep = leg_arr - timedelta(minutes=primary.duration_minutes)
+        if leg_arr is None and leg_dep is not None and primary.duration_minutes:
+            leg_arr = leg_dep + timedelta(minutes=primary.duration_minutes)
+
+        return PlanTransition(
+            from_location=origin,
+            to_location=destination,
+            departure_time=leg_dep,
+            arrival_time=leg_arr,
+            duration_minutes=primary.duration_minutes,
+            mode=primary.mode,
+            provider_id=primary.provider_id,
+            provider_name=primary.provider_name,
+            cost=primary.cost,
+            cost_known=not primary.cost_is_unknown,
+            currency=primary.currency,
+            transfers=primary.transfers,
+            confidence=primary.confidence,
+            live_status=primary.live_status,
+            booking_capability=primary.booking_capability,
+            booking_url=primary.booking_url,
+            summary=primary.summary or f"{primary.provider_name} to {destination}",
+            evidence=tuple(primary.evidence),
+            available_options=tuple(options),
+            is_feasible=is_feasible,
+            feasibility_issue=feasibility_issue,
+        )
 
     async def evaluate_transitions(
         self,
@@ -46,116 +196,28 @@ class MobilityPlanningService:
 
         transitions: list[PlanTransition] = []
 
-        for i in range(len(items) - 1):
-            item_a = items[i]
-            item_b = items[i + 1]
-
+        for item_a, item_b in zip(items, items[1:], strict=False):
             loc_a = item_a.location.strip()  # type: ignore[union-attr]
             loc_b = item_b.location.strip()  # type: ignore[union-attr]
 
-            if loc_a.lower() == loc_b.lower():
-                continue
-
-            dep_time = item_a.end_time or item_a.start_time
-            arr_time = item_b.start_time or item_b.end_time
-
-            req = MobilityRequirement(
+            transition = await self._build_transition(
                 origin=loc_a,
                 destination=loc_b,
-                departure_time=dep_time,
-                arrival_time=arr_time,
+                from_name=item_a.name,
+                to_name=item_b.name,
+                departure_time=item_a.end_time or item_a.start_time,
+                arrival_time=item_b.start_time or item_b.end_time,
                 party_size=party_size,
                 preferred_modes=preferred_modes or [],
+                window_start=item_a.end_time,
+                window_end=item_b.start_time,
             )
-
-            try:
-                options = await self._mobility_service.find_options_for_requirement(req)
-            except Exception as e:
-                logger.error(
-                    "Error querying mobility options between %s and %s: %s",
-                    loc_a,
-                    loc_b,
-                    e,
-                    exc_info=True,
-                )
-                options = []
-
-            if not options:
-                # Default unknown transition when no provider has verified data
-                transition = PlanTransition(
-                    from_item_id=item_a.id,
-                    to_item_id=item_b.id,
-                    from_location=loc_a,
-                    to_location=loc_b,
-                    departure_time=dep_time,
-                    arrival_time=arr_time,
-                    mode=TransportMode.OTHER,
-                    provider_id="unknown",
-                    provider_name="Transport",
-                    cost=None,
-                    cost_known=False,
-                    summary=f"Travel from {loc_a} to {loc_b}",
-                    is_feasible=True,
-                )
-                transitions.append(transition)
+            if transition is None:
                 continue
 
-            # Pick the primary recommended option:
-            # 1. Preferred mode if matched
-            # 2. Walking if duration <= 15 minutes
-            # 3. Lowest duration option
-            primary = self._select_primary_option(options, preferred_modes)
-
-            # Feasibility evaluation: check available time window between stops
-            is_feasible = True
-            feasibility_issue = None
-
-            if item_a.end_time and item_b.start_time:
-                available_mins = int((item_b.start_time - item_a.end_time).total_seconds() // 60)
-                if primary.duration_minutes is not None and primary.duration_minutes > available_mins:
-                    is_feasible = False
-                    feasibility_issue = (
-                        f"Travel time ({primary.duration_minutes} min via {primary.provider_name}) "
-                        f"exceeds available window ({available_mins} min) between '{item_a.name}' and '{item_b.name}'."
-                    )
-
-            # Compute actual departure/arrival times for the travel leg
-            leg_dep = dep_time or (
-                arr_time - timedelta(minutes=primary.duration_minutes)
-                if arr_time and primary.duration_minutes
-                else None
-            )
-            leg_arr = arr_time or (
-                leg_dep + timedelta(minutes=primary.duration_minutes)
-                if leg_dep and primary.duration_minutes
-                else None
-            )
-
-            transition = PlanTransition(
-                from_item_id=item_a.id,
-                to_item_id=item_b.id,
-                from_location=loc_a,
-                to_location=loc_b,
-                departure_time=leg_dep,
-                arrival_time=leg_arr,
-                duration_minutes=primary.duration_minutes,
-                mode=primary.mode,
-                provider_id=primary.provider_id,
-                provider_name=primary.provider_name,
-                cost=primary.cost,
-                cost_known=not primary.cost_is_unknown,
-                currency=primary.currency,
-                transfers=primary.transfers,
-                confidence=primary.confidence,
-                live_status=primary.live_status,
-                booking_capability=primary.booking_capability,
-                booking_url=primary.booking_url,
-                summary=primary.summary or f"{primary.provider_name} to {loc_b}",
-                evidence=tuple(primary.evidence),
-                available_options=tuple(options),
-                is_feasible=is_feasible,
-                feasibility_issue=feasibility_issue,
-            )
+            # Re-attach the persisted item ids the leg was derived from.
+            transition.from_item_id = item_a.id
+            transition.to_item_id = item_b.id
             transitions.append(transition)
 
         return transitions

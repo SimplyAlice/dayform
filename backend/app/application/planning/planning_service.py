@@ -252,6 +252,7 @@ class PlanningService:
                 start_time=start_dt,
                 end_time=end_dt,
                 group_size=group_size,
+                transport_mode=understanding.transport_mode,
                 constraints=constraints,
             )
         )

@@ -225,3 +225,43 @@ export async function evaluatePlanTransitions(
   );
 }
 
+/**
+ * A stop in a proposed itinerary that has not yet been saved to the plan.
+ */
+export interface ProposedStopInput {
+  name?: string;
+  location: string;
+  start_time?: string | null;
+  end_time?: string | null;
+  estimated_cost?: string | number | null;
+}
+
+/**
+ * Evaluates mobility across a proposed itinerary before the plan is saved.
+ * Endpoint: POST /api/v1/planning/plans/{plan_id}/transitions/proposed
+ */
+export async function evaluateProposedTransitions(
+  planId: string,
+  stops: ProposedStopInput[],
+  preferredModes?: string[],
+  partySize: number = 1
+): Promise<PlanTransitionsResponse> {
+  return apiClient<PlanTransitionsResponse>(
+    `/planning/plans/${planId}/transitions/proposed`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        stops: stops.map((s) => ({
+          name: s.name || '',
+          location: s.location,
+          start_time: s.start_time || null,
+          end_time: s.end_time || null,
+          estimated_cost: s.estimated_cost ?? null,
+        })),
+        preferred_modes: preferredModes || null,
+        party_size: partySize,
+      }),
+    }
+  );
+}
+

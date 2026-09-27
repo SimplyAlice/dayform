@@ -30,7 +30,10 @@ from app.application.planning.execution_service import PlanExecutionService
 from app.application.planning.information import PlanningInformationService
 from app.application.planning.intent_interpreter import IntentInterpreter
 from app.application.planning.live_intelligence_service import LiveIntelligenceService
-from app.application.planning.mobility_planning_service import MobilityPlanningService
+from app.application.planning.mobility_planning_service import (
+    MobilityPlanningService,
+    StopSequencePoint,
+)
 from app.application.planning.planning_service import PlanningService
 from app.application.planning.ports import PlanningUnderstandingPort
 from app.application.planning.selection_service import PlanSelectionService, criteria_from_plan
@@ -169,6 +172,7 @@ class UnderstandingRead(BaseModel):
     duration_limit_minutes: int | None = None
     location: str | None = None
     location_is_inferred: bool = False
+    transport_mode: str | None = None
     budget_amount: Decimal | None = None
     budget_kind: str = "none"
     preferences: list[str] = Field(default_factory=list)
@@ -195,6 +199,7 @@ class UnderstandingRead(BaseModel):
             duration_limit_minutes=u.duration_limit_minutes,
             location=u.location,
             location_is_inferred=u.location_is_inferred,
+            transport_mode=u.transport_mode,
             budget_amount=u.budget_amount,
             budget_kind=u.budget_kind.value,
             preferences=list(u.preferences),
@@ -395,6 +400,53 @@ class PlanTransitionsResponse(BaseModel):
 class EvaluateTransitionsRequest(BaseModel):
     preferred_modes: list[str] | None = None
     party_size: int = Field(default=1, ge=1)
+
+
+class ProposedStopRead(BaseModel):
+    """A stop in a proposed itinerary that has not yet been persisted as a plan item."""
+
+    name: str = Field(default="", max_length=255)
+    location: str = Field(..., min_length=1, max_length=255)
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    estimated_cost: Decimal | None = Field(default=None, ge=0)
+
+    def to_point(self) -> StopSequencePoint:
+        return StopSequencePoint(
+            location=self.location,
+            name=self.name,
+            start_time=self.start_time,
+            end_time=self.end_time,
+            estimated_cost=self.estimated_cost,
+        )
+
+
+class ProposedTransitionsRequest(BaseModel):
+    stops: list[ProposedStopRead] = Field(..., min_length=2, max_length=20)
+    preferred_modes: list[str] | None = None
+    party_size: int = Field(default=1, ge=1)
+
+
+def _preferred_modes_from_context(transport_mode: str | None) -> list[TransportMode]:
+    """Translate an extracted transport preference into concrete M14 transport modes.
+
+    A preference such as "public transport" spans several modes, so it maps to a set
+    rather than a single `TransportMode`. An unrecognised or absent preference yields
+    no modes, leaving mobility selection to the default ranking.
+    """
+    if not transport_mode:
+        return []
+    normalized = transport_mode.strip().lower()
+    if normalized in {"public_transport", "transit", "public_transit"}:
+        return [TransportMode.BUS, TransportMode.TRAIN, TransportMode.SHUTTLE]
+    if normalized == "walk":
+        return [TransportMode.WALK]
+    if normalized in {"ride_hail", "taxi"}:
+        return [TransportMode.RIDE_HAIL]
+    try:
+        return [TransportMode(normalized)]
+    except ValueError:
+        return []
 
 
 class PlanRead(BaseModel):
@@ -1010,12 +1062,9 @@ async def get_plan_transitions(
 ) -> PlanTransitionsResponse:
     try:
         plan = await planning_service.get_plan(current_user.id, plan_id)
-        preferred_modes: list[TransportMode] = []
-        if plan.context and plan.context.transport_mode:
-            try:
-                preferred_modes.append(TransportMode(plan.context.transport_mode.lower()))
-            except ValueError:
-                pass
+        preferred_modes = _preferred_modes_from_context(
+            plan.context.transport_mode if plan.context else None
+        )
         transitions = await mobility_service.evaluate_transitions(
             plan,
             party_size=plan.context.group_size if plan.context else 1,
@@ -1054,6 +1103,76 @@ async def evaluate_plan_transitions(
             preferred_modes=pref_modes or None,
         )
         feasibility = mobility_service.check_plan_feasibility(plan, transitions)
+        return PlanTransitionsResponse(
+            plan_id=plan.id,
+            transitions=[PlanTransitionRead.from_domain(t) for t in transitions],
+            feasibility=ItineraryFeasibilityRead.from_domain(feasibility),
+        )
+    except PlanningNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.post("/plans/{plan_id}/transitions/proposed", response_model=PlanTransitionsResponse)
+async def evaluate_proposed_transitions(
+    plan_id: UUID,
+    body: ProposedTransitionsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    planning_service: Annotated[PlanningService, Depends(get_planning_service)],
+    mobility_service: Annotated[MobilityPlanningService, Depends(get_mobility_planning_service)],
+) -> PlanTransitionsResponse:
+    """Evaluate mobility across a proposed itinerary before any stop is saved.
+
+    A proposal is assembled from ranked candidates and only persisted once the user
+    confirms it, so the saved plan has no items to derive transitions from at this
+    point. This endpoint takes the proposed stop sequence directly and reuses the
+    same M15 evaluation the saved-plan path uses.
+    """
+    try:
+        plan = await planning_service.get_plan(current_user.id, plan_id)
+
+        pref_modes: list[TransportMode] = []
+        if body.preferred_modes:
+            for mode in body.preferred_modes:
+                try:
+                    pref_modes.append(TransportMode(mode.lower()))
+                except ValueError:
+                    continue
+        if not pref_modes:
+            pref_modes = _preferred_modes_from_context(
+                plan.context.transport_mode if plan.context else None
+            )
+
+        transitions = await mobility_service.evaluate_stop_sequence(
+            [stop.to_point() for stop in body.stops],
+            party_size=body.party_size or (plan.context.group_size if plan.context else 1),
+            preferred_modes=pref_modes or None,
+        )
+
+        # Budget/deadline feasibility is assessed against the real plan's constraints
+        # combined with the proposed stops' own costs.
+        proposed_plan = Plan(
+            id=plan.id,
+            user_id=current_user.id,
+            intention=plan.intention,
+            status=plan.status,
+            context=plan.context,
+            constraints=plan.constraints,
+            items=[
+                PlanItem(
+                    plan_id=plan.id,
+                    name=stop.name or stop.location,
+                    item_type=PlanItemType.ACTIVITY,
+                    location=stop.location,
+                    start_time=stop.start_time,
+                    end_time=stop.end_time,
+                    estimated_cost=stop.estimated_cost,
+                    position=idx,
+                )
+                for idx, stop in enumerate(body.stops)
+            ],
+        )
+        feasibility = mobility_service.check_plan_feasibility(proposed_plan, transitions)
+
         return PlanTransitionsResponse(
             plan_id=plan.id,
             transitions=[PlanTransitionRead.from_domain(t) for t in transitions],

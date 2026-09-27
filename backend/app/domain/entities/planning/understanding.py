@@ -40,6 +40,7 @@ class PlanningUnderstanding:
     duration_limit_minutes: int | None = None
     location: str | None = None
     location_is_inferred: bool = False
+    transport_mode: str | None = None
     budget_amount: Decimal | None = None
     budget_kind: BudgetKind = BudgetKind.NONE
     budget_model: BudgetConstraint | None = None

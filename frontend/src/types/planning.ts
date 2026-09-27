@@ -131,6 +131,7 @@ export interface UnderstandingRead {
   duration_limit_minutes?: number | null;
   location: string | null;
   location_is_inferred: boolean;
+  transport_mode?: string | null;
   budget_amount: string | number | null;
   budget_kind: 'hard_max' | 'approximate' | 'preference' | 'none';
   preferences: string[];

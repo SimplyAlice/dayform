@@ -80,6 +80,12 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
         location, is_inferred, loc_prov, location_descriptors = self._extract_location(normalized)
         provenance["location"] = loc_prov.value
 
+        # 4b. Mobility preference (how the user intends to move between stops)
+        transport_mode = self._extract_transport_mode(normalized)
+        provenance["transport_mode"] = (
+            ProvenanceKind.EXPLICIT.value if transport_mode else ProvenanceKind.UNKNOWN.value
+        )
+
         # 5. Budget semantics
         budget_amount, budget_kind, budget_prov, budget_model = self._extract_budget(normalized)
         provenance["budget"] = budget_prov.value
@@ -137,6 +143,7 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             duration_limit_minutes=duration_limit,
             location=location,
             location_is_inferred=is_inferred,
+            transport_mode=transport_mode,
             budget_amount=budget_amount,
             budget_kind=budget_kind,
             budget_model=budget_model,
@@ -728,6 +735,34 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
                 descriptors.append(label)
 
         return descriptors
+
+    @staticmethod
+    def _extract_transport_mode(text: str) -> str | None:
+        """Extract an explicitly stated mobility preference.
+
+        Only explicit statements produce a value — a missing preference must stay
+        unknown so mobility-aware planning can fall back to sensible defaults rather
+        than inventing a transport constraint the user never gave.
+        """
+        lower = text.lower()
+        if re.search(
+            r"\b(?:public\s+transport|public\s+transit|public\s+transporation|by\s+bus|by\s+train|"
+            r"take\s+the\s+(?:bus|train|taxi)|the\s+(?:bus|train|taxi|uber|bolt|metrorail)|"
+            r"using\s+(?:the\s+)?(?:bus|train|taxi|uber|bolt|metrorail)|"
+            r"no\s+car|without\s+a\s+car|don'?t\s+have\s+a\s+car|no\s+uber|without\s+uber|"
+            r"walk(?:ing)?\s+(?:there|to\s+get\s+there|instead)|on\s+foot|shuttle)\b",
+            lower,
+        ):
+            if re.search(
+                r"\b(?:no\s+car|without\s+a\s+car|don'?t\s+have\s+a\s+car|walk(?:ing)?\s+"
+                r"(?:there|to\s+get\s+there|instead)|on\s+foot)\b",
+                lower,
+            ):
+                return "walk"
+            if re.search(r"\bno\s+uber\b|\bwithout\s+uber\b", lower):
+                return "public_transport"
+            return "public_transport"
+        return None
 
     @staticmethod
     def _extract_preferences(text: str, exclusions: list[str]) -> list[str]:

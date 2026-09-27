@@ -12,7 +12,10 @@ from app.application.mobility.service import MobilityService
 from app.application.planning.adaptation_service import PlanAdaptationService
 from app.application.planning.decision_service import PlanningDecisionService
 from app.application.planning.information import PlanningInformationService
-from app.application.planning.mobility_planning_service import MobilityPlanningService
+from app.application.planning.mobility_planning_service import (
+    MobilityPlanningService,
+    StopSequencePoint,
+)
 from app.application.planning.planning_service import PlanningService
 from app.domain.entities.mobility.enums import (
     BookingCapability,
@@ -610,6 +613,119 @@ async def test_tight_transition_window_detection(
     feasibility = mobility_planning_service.check_plan_feasibility(plan, transitions)
     assert feasibility.transitions_feasible is False
     assert feasibility.is_feasible is False
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stop_sequence_for_unsaved_proposal(
+    mobility_planning_service: MobilityPlanningService,
+) -> None:
+    """A proposal has no persisted PlanItems, so mobility must work from stops alone."""
+    now = datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc)
+    stops = [
+        StopSequencePoint(
+            location="Buitenkant St, Cape Town CBD",
+            name="Coffee",
+            start_time=now,
+            end_time=now + timedelta(hours=1),
+        ),
+        StopSequencePoint(
+            location="Buitenkant St & Albertus St, Cape Town CBD",
+            name="Museum",
+            start_time=now + timedelta(hours=1, minutes=30),
+            end_time=now + timedelta(hours=2, minutes=30),
+        ),
+    ]
+
+    transitions = await mobility_planning_service.evaluate_stop_sequence(stops)
+
+    assert len(transitions) == 1
+    t = transitions[0]
+    assert t.from_location == "Buitenkant St, Cape Town CBD"
+    assert t.to_location == "Buitenkant St & Albertus St, Cape Town CBD"
+    assert t.mode == TransportMode.WALK
+    assert t.duration_minutes == 5
+    assert t.cost == Decimal("0")
+    assert t.cost_known is True
+    # Stop-sequence transitions are not tied to persisted items.
+    assert t.from_item_id is None
+    assert t.to_item_id is None
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stop_sequence_needs_two_stops(
+    mobility_planning_service: MobilityPlanningService,
+) -> None:
+    assert await mobility_planning_service.evaluate_stop_sequence([]) == []
+    assert (
+        await mobility_planning_service.evaluate_stop_sequence(
+            [StopSequencePoint(location="Gardens, Cape Town", name="Only")]
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stop_sequence_skips_same_location_legs(
+    mobility_planning_service: MobilityPlanningService,
+) -> None:
+    now = datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc)
+    stops = [
+        StopSequencePoint(location="Civic Centre, Cape Town", name="A", end_time=now),
+        StopSequencePoint(
+            location="civic centre, cape town", name="B", start_time=now + timedelta(hours=1)
+        ),
+    ]
+
+    # Same venue means no travel leg, so no transition is invented.
+    assert await mobility_planning_service.evaluate_stop_sequence(stops) == []
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stop_sequence_respects_tight_window(
+    mobility_planning_service: MobilityPlanningService,
+) -> None:
+    now = datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc)
+    stops = [
+        StopSequencePoint(
+            location="Cape Town CBD",
+            name="Brunch",
+            start_time=now,
+            end_time=now + timedelta(hours=1),
+        ),
+        StopSequencePoint(
+            location="Camps Bay",
+            name="Lunch",
+            start_time=now + timedelta(hours=1, minutes=5),
+            end_time=now + timedelta(hours=2),
+        ),
+    ]
+
+    transitions = await mobility_planning_service.evaluate_stop_sequence(stops)
+
+    assert len(transitions) == 1
+    assert transitions[0].is_feasible is False
+    assert "exceeds available window" in (transitions[0].feasibility_issue or "")
+
+
+@pytest.mark.asyncio
+async def test_evaluate_stop_sequence_keeps_unknown_cost_unknown(
+    mobility_planning_service: MobilityPlanningService,
+) -> None:
+    now = datetime(2026, 9, 25, 10, 0, tzinfo=timezone.utc)
+    stops = [
+        StopSequencePoint(location="Gardens, Cape Town", name="A", end_time=now),
+        StopSequencePoint(location="Observatory, Cape Town", name="B", start_time=now + timedelta(hours=1)),
+    ]
+
+    transitions = await mobility_planning_service.evaluate_stop_sequence(
+        stops, preferred_modes=[TransportMode.RIDE_HAIL]
+    )
+
+    assert len(transitions) == 1
+    t = transitions[0]
+    # Uber's fare is dynamic, so an unknown cost must not be fabricated.
+    assert t.cost_known is False
+    assert t.cost is None
 
 
 def test_candidate_mobility_scoring(

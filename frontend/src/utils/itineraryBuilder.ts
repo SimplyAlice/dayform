@@ -1,4 +1,9 @@
-import type { DecisionCandidateRead, InformationCategory, UnderstandingRead } from '../types/planning';
+import type {
+  DecisionCandidateRead,
+  InformationCategory,
+  PlanTransitionRead,
+  UnderstandingRead,
+} from '../types/planning';
 
 export interface ProposedItineraryItem {
   candidate: DecisionCandidateRead;
@@ -132,20 +137,70 @@ export function getBaseStartTimeMinutes(understanding?: UnderstandingRead | null
   return { minutes: 11 * 60, isApproximate: true };
 }
 
+/**
+ * Resolve the address a mobility provider can geocode for a proposed stop.
+ */
+export function resolveStopLocation(item: ProposedItineraryItem): string | null {
+  const raw = item.candidate.address || item.candidate.location;
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
+ * Locate the mobility transition joining two consecutive proposed stops, if one exists.
+ */
+export function findTransitionBetween(
+  from: ProposedItineraryItem,
+  to: ProposedItineraryItem | undefined,
+  transitions: PlanTransitionRead[]
+): PlanTransitionRead | null {
+  if (!to) return null;
+  const fromLoc = resolveStopLocation(from);
+  const toLoc = resolveStopLocation(to);
+  if (!fromLoc || !toLoc) return null;
+  return (
+    transitions.find(
+      (t) =>
+        t.from_location?.trim().toLowerCase() === fromLoc.toLowerCase() &&
+        t.to_location?.trim().toLowerCase() === toLoc.toLowerCase()
+    ) || null
+  );
+}
+
+/**
+ * Per-leg travel minutes taken from the actual M15 transitions.
+ *
+ * A leg whose duration is unknown contributes 0 minutes rather than a guessed
+ * buffer, so the schedule never invents transport time. Those legs also stay
+ * flagged by M15 feasibility, which reports the missing window truthfully.
+ */
+export function travelMinutesForItems(
+  items: ProposedItineraryItem[],
+  transitions: PlanTransitionRead[]
+): number[] {
+  return items.slice(0, -1).map((item, idx) => {
+    const transition = findTransitionBetween(item, items[idx + 1], transitions);
+    return transition?.duration_minutes ?? 0;
+  });
+}
+
 export function assignTimeSlots(
   items: ProposedItineraryItem[],
-  understanding?: UnderstandingRead | null
+  understanding?: UnderstandingRead | null,
+  travelMinutes: number[] = []
 ): ProposedItineraryItem[] {
   if (items.length === 0) return [];
   const base = getBaseStartTimeMinutes(understanding);
   let currentCursor = base.minutes;
 
-  return items.map((item) => {
+  return items.map((item, idx) => {
     const dur = item.candidate.duration_minutes || (item.candidate.option_type === 'place' ? 90 : 60);
     const startStr = formatMinutesToTime(currentCursor);
     const endCursor = currentCursor + dur;
     const endStr = formatMinutesToTime(endCursor);
-    currentCursor = endCursor;
+    // The next stop begins only after the activity AND the travel leg complete.
+    currentCursor = endCursor + (travelMinutes[idx] ?? 0);
 
     return {
       ...item,
@@ -197,7 +252,12 @@ export function humanizeCandidateReasons(
 
   // 3. Occasion rationale
   if (understanding?.occasion === 'date') {
-    humanReasons.push('Romantic and relaxed atmosphere for two.');
+    const guests = understanding.people_count ?? 2;
+    humanReasons.push(
+      guests === 2
+        ? 'Romantic and relaxed atmosphere for two.'
+        : `Romantic and relaxed atmosphere for your group of ${guests}.`
+    );
   } else if (understanding?.occasion === 'birthday') {
     humanReasons.push('A celebratory setting well suited for a special occasion.');
   } else if (understanding?.occasion === 'friends') {
@@ -274,12 +334,15 @@ export function buildProposalNarrative(
   understanding?: UnderstandingRead | null
 ): string {
   const categories = new Set(items.map((i) => i.candidate.category));
+  const guests = understanding?.people_count ?? 2;
+  // Copy must follow the extracted group size, not a fixed couple.
+  const couplePhrase = guests === 2 ? 'the two of you' : `all ${guests} of you`;
 
   if (understanding?.duration_limit_minutes) {
     const hours = Math.round(understanding.duration_limit_minutes / 60);
     const hrsStr = hours === 1 ? '1-hour' : `${hours}-hour`;
     if (understanding.occasion === 'date') {
-      return `A focused ${hrsStr} date outing tailored for the two of you.`;
+      return `A focused ${hrsStr} date outing tailored for ${couplePhrase}.`;
     }
     if (understanding.occasion === 'birthday') {
       return `A celebratory ${hrsStr} birthday plan tailored to your time limit.`;
@@ -292,9 +355,9 @@ export function buildProposalNarrative(
 
   if (understanding?.occasion === 'date') {
     if (remainingBudget !== null && remainingBudget > 0) {
-      return `A romantic outing designed for the two of you, with ${formatCurrency(remainingBudget)} left to spare.`;
+      return `A romantic outing designed for ${couplePhrase}, with ${formatCurrency(remainingBudget)} left to spare.`;
     }
-    return 'A relaxed, memorable date outing tailored for the two of you.';
+    return `A relaxed, memorable date outing tailored for ${couplePhrase}.`;
   }
 
   if (understanding?.occasion === 'birthday') {
@@ -497,9 +560,10 @@ export function recalculateItinerary(
   allEligibleCandidates: DecisionCandidateRead[],
   budgetMax: number | null,
   understanding?: UnderstandingRead | null,
-  tradeOffSummary?: string | null
+  tradeOffSummary?: string | null,
+  travelMinutes: number[] = []
 ): ProposedItinerary {
-  const slottedItems = assignTimeSlots(items, understanding);
+  const slottedItems = assignTimeSlots(items, understanding, travelMinutes);
   const currentCost = slottedItems.reduce((sum, item) => sum + item.costNumber, 0);
   const selectedIds = new Set(slottedItems.map((i) => i.candidate.option_id));
   const alternatives = allEligibleCandidates.filter((c) => !selectedIds.has(c.option_id));
