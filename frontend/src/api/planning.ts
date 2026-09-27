@@ -4,11 +4,13 @@ import type {
   DecisionCandidateRead,
   ExecutionActionType,
   ExecutionResultRead,
+  ItineraryFeasibilityRead,
   PlanActionsRead,
   PlanAdaptationRead,
   PlanHealthCheckRead,
   PlanItemRead,
   PlanRead,
+  PlanTransitionRead,
   RecommendationResponse,
   SelectOptionRequest,
 } from '../types/planning';
@@ -185,3 +187,41 @@ export async function checkPlanHealth(
     }
   );
 }
+
+export interface PlanTransitionsResponse {
+  plan_id: string;
+  transitions: PlanTransitionRead[];
+  feasibility: ItineraryFeasibilityRead;
+}
+
+/**
+ * Retrieves physical transitions and feasibility assessment for an itinerary.
+ * Endpoint: GET /api/v1/planning/plans/{plan_id}/transitions
+ */
+export async function getPlanTransitions(
+  planId: string
+): Promise<PlanTransitionsResponse> {
+  return apiClient<PlanTransitionsResponse>(`/planning/plans/${planId}/transitions`);
+}
+
+/**
+ * Evaluates physical transitions with user-specified preferences.
+ * Endpoint: POST /api/v1/planning/plans/{plan_id}/transitions/evaluate
+ */
+export async function evaluatePlanTransitions(
+  planId: string,
+  preferredModes?: string[],
+  partySize: number = 1
+): Promise<PlanTransitionsResponse> {
+  return apiClient<PlanTransitionsResponse>(
+    `/planning/plans/${planId}/transitions/evaluate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        preferred_modes: preferredModes || null,
+        party_size: partySize,
+      }),
+    }
+  );
+}
+

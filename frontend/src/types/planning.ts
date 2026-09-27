@@ -43,6 +43,7 @@ export type ReasonType =
   | 'semantic_match'
   | 'exclusion'
   | 'setting'
+  | 'mobility'
   | 'general';
 
 export type ReasonOutcome = 'supported' | 'neutral' | 'violated';
@@ -142,6 +143,60 @@ export interface UnderstandingRead {
   provenance: Record<string, string>;
 }
 
+export interface PlanTransitionOptionRead {
+  provider_id: string;
+  provider_name: string;
+  mode: string;
+  duration_minutes: number | null;
+  cost: string | number | null;
+  cost_known: boolean;
+  currency: string;
+  transfers: number;
+  confidence: number;
+  live_status: string;
+  booking_capability: string;
+  booking_url?: string | null;
+  summary: string;
+}
+
+export interface PlanTransitionRead {
+  id: string;
+  from_item_id?: string | null;
+  to_item_id?: string | null;
+  from_location: string;
+  to_location: string;
+  departure_time?: string | null;
+  arrival_time?: string | null;
+  duration_minutes?: number | null;
+  mode: string;
+  provider_id: string;
+  provider_name: string;
+  cost?: string | number | null;
+  cost_known: boolean;
+  currency: string;
+  transfers: number;
+  confidence: number;
+  live_status: string;
+  booking_capability: string;
+  booking_url?: string | null;
+  summary: string;
+  is_feasible: boolean;
+  feasibility_issue?: string | null;
+  available_options?: PlanTransitionOptionRead[];
+}
+
+export interface ItineraryFeasibilityRead {
+  is_feasible: boolean;
+  deadline_respected: boolean;
+  budget_respected: boolean;
+  transitions_feasible: boolean;
+  issues: string[];
+  warnings: string[];
+  total_transition_duration_minutes: number;
+  total_known_transition_cost: string | number;
+  has_unknown_transition_costs: boolean;
+}
+
 export interface PlanRead {
   id: string;
   intention: string;
@@ -154,6 +209,8 @@ export interface PlanRead {
   items: PlanItemRead[];
   budget: BudgetRead;
   understanding?: UnderstandingRead | null;
+  transitions?: PlanTransitionRead[];
+  feasibility?: ItineraryFeasibilityRead | null;
 }
 
 export interface CreatePlanFromIntentRequest {

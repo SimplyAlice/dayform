@@ -307,3 +307,41 @@ export const IconCompass: React.FC<IconProps> = ({ size = 16, className = '', st
   </svg>
 );
 
+export const IconWalk: React.FC<IconProps> = ({ size = 16, className = '', strokeWidth = 1.75 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <circle cx="13" cy="3" r="1.5" />
+    <path d="M6 21l3-7 3 3 2 5" />
+    <path d="M9 14l2-5 3 2 3-2" />
+  </svg>
+);
+
+export const IconBus: React.FC<IconProps> = ({ size = 16, className = '', strokeWidth = 1.75 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <rect x="4" y="3" width="16" height="14" rx="2" />
+    <line x1="4" y1="9" x2="20" y2="9" />
+    <circle cx="8" cy="14" r="1" />
+    <circle cx="16" cy="14" r="1" />
+    <line x1="6" y1="17" x2="6" y2="20" />
+    <line x1="18" y1="17" x2="18" y2="20" />
+  </svg>
+);
+
+export const IconTrain: React.FC<IconProps> = ({ size = 16, className = '', strokeWidth = 1.75 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <rect x="4" y="3" width="16" height="13" rx="2" />
+    <line x1="4" y1="8" x2="20" y2="8" />
+    <circle cx="8" cy="12" r="1" />
+    <circle cx="16" cy="12" r="1" />
+    <path d="M6 16l-2 4h16l-2-4" />
+  </svg>
+);
+
+export const IconCar: React.FC<IconProps> = ({ size = 16, className = '', strokeWidth = 1.75 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="M5 16h14M5 16a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2M5 16l-1 3M19 16l1 3" />
+    <circle cx="7.5" cy="13" r="1" />
+    <circle cx="16.5" cy="13" r="1" />
+  </svg>
+);
+
+

@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from app.api.deps import (
     get_intent_interpreter,
     get_live_intelligence_service,
+    get_mobility_planning_service,
     get_plan_adaptation_service,
     get_plan_execution_service,
     get_plan_selection_service,
@@ -29,13 +30,17 @@ from app.application.planning.execution_service import PlanExecutionService
 from app.application.planning.information import PlanningInformationService
 from app.application.planning.intent_interpreter import IntentInterpreter
 from app.application.planning.live_intelligence_service import LiveIntelligenceService
+from app.application.planning.mobility_planning_service import MobilityPlanningService
 from app.application.planning.planning_service import PlanningService
 from app.application.planning.ports import PlanningUnderstandingPort
 from app.application.planning.selection_service import PlanSelectionService, criteria_from_plan
 from app.application.planning.understanding_service import DeterministicUnderstandingEngine
+from app.domain.entities.mobility.enums import TransportMode
+from app.domain.entities.mobility.models import MobilityOption
 from app.domain.entities.planning.adaptation import ItemAction, ItemDiff, PlanAdaptation
 from app.domain.entities.planning.constraint import ConstraintType
 from app.domain.entities.planning.decision import CandidateType
+from app.domain.entities.planning.transition import ItineraryFeasibility, PlanTransition
 from app.domain.entities.planning.execution import (
     ExecutionAction,
     ExecutionActionStatus,
@@ -267,6 +272,131 @@ class BudgetRead(BaseModel):
     is_over_budget: bool
 
 
+class PlanTransitionOptionRead(BaseModel):
+    provider_id: str
+    provider_name: str
+    mode: str
+    duration_minutes: int | None
+    cost: Decimal | None
+    cost_known: bool
+    currency: str = "ZAR"
+    transfers: int = 0
+    confidence: float
+    live_status: str
+    booking_capability: str
+    booking_url: str | None = None
+    summary: str
+
+    @classmethod
+    def from_option(cls, opt: MobilityOption) -> PlanTransitionOptionRead:
+        return cls(
+            provider_id=opt.provider_id,
+            provider_name=opt.provider_name,
+            mode=opt.mode.value if hasattr(opt.mode, "value") else str(opt.mode),
+            duration_minutes=opt.duration_minutes,
+            cost=opt.cost,
+            cost_known=not opt.cost_is_unknown,
+            currency=opt.currency,
+            transfers=opt.transfers,
+            confidence=opt.confidence,
+            live_status=opt.live_status.value if hasattr(opt.live_status, "value") else str(opt.live_status),
+            booking_capability=opt.booking_capability.value if hasattr(opt.booking_capability, "value") else str(opt.booking_capability),
+            booking_url=opt.booking_url,
+            summary=opt.summary,
+        )
+
+
+class PlanTransitionRead(BaseModel):
+    id: str
+    from_item_id: UUID | None = None
+    to_item_id: UUID | None = None
+    from_location: str
+    to_location: str
+    departure_time: datetime | None = None
+    arrival_time: datetime | None = None
+    duration_minutes: int | None = None
+    mode: str
+    provider_id: str
+    provider_name: str
+    cost: Decimal | None = None
+    cost_known: bool
+    currency: str = "ZAR"
+    transfers: int = 0
+    confidence: float
+    live_status: str
+    booking_capability: str
+    booking_url: str | None = None
+    summary: str
+    is_feasible: bool = True
+    feasibility_issue: str | None = None
+    available_options: list[PlanTransitionOptionRead] = Field(default_factory=list)
+
+    @classmethod
+    def from_domain(cls, t: PlanTransition) -> PlanTransitionRead:
+        return cls(
+            id=t.id,
+            from_item_id=t.from_item_id,
+            to_item_id=t.to_item_id,
+            from_location=t.from_location,
+            to_location=t.to_location,
+            departure_time=t.departure_time,
+            arrival_time=t.arrival_time,
+            duration_minutes=t.duration_minutes,
+            mode=t.mode.value if hasattr(t.mode, "value") else str(t.mode),
+            provider_id=t.provider_id,
+            provider_name=t.provider_name,
+            cost=t.cost,
+            cost_known=t.cost_known,
+            currency=t.currency,
+            transfers=t.transfers,
+            confidence=t.confidence,
+            live_status=t.live_status.value if hasattr(t.live_status, "value") else str(t.live_status),
+            booking_capability=t.booking_capability.value if hasattr(t.booking_capability, "value") else str(t.booking_capability),
+            booking_url=t.booking_url,
+            summary=t.summary,
+            is_feasible=t.is_feasible,
+            feasibility_issue=t.feasibility_issue,
+            available_options=[PlanTransitionOptionRead.from_option(o) for o in t.available_options],
+        )
+
+
+class ItineraryFeasibilityRead(BaseModel):
+    is_feasible: bool
+    deadline_respected: bool
+    budget_respected: bool
+    transitions_feasible: bool
+    issues: list[str]
+    warnings: list[str]
+    total_transition_duration_minutes: int
+    total_known_transition_cost: Decimal
+    has_unknown_transition_costs: bool
+
+    @classmethod
+    def from_domain(cls, f: ItineraryFeasibility) -> ItineraryFeasibilityRead:
+        return cls(
+            is_feasible=f.is_feasible,
+            deadline_respected=f.deadline_respected,
+            budget_respected=f.budget_respected,
+            transitions_feasible=f.transitions_feasible,
+            issues=list(f.issues),
+            warnings=list(f.warnings),
+            total_transition_duration_minutes=f.total_transition_duration_minutes,
+            total_known_transition_cost=f.total_known_transition_cost,
+            has_unknown_transition_costs=f.has_unknown_transition_costs,
+        )
+
+
+class PlanTransitionsResponse(BaseModel):
+    plan_id: UUID
+    transitions: list[PlanTransitionRead]
+    feasibility: ItineraryFeasibilityRead
+
+
+class EvaluateTransitionsRequest(BaseModel):
+    preferred_modes: list[str] | None = None
+    party_size: int = Field(default=1, ge=1)
+
+
 class PlanRead(BaseModel):
     id: UUID
     intention: str
@@ -279,9 +409,17 @@ class PlanRead(BaseModel):
     items: list[PlanItemRead]
     budget: BudgetRead
     understanding: UnderstandingRead | None = None
+    transitions: list[PlanTransitionRead] = Field(default_factory=list)
+    feasibility: ItineraryFeasibilityRead | None = None
 
     @classmethod
-    def from_plan(cls, plan: Plan, understanding: PlanningUnderstanding | None = None) -> PlanRead:
+    def from_plan(
+        cls,
+        plan: Plan,
+        understanding: PlanningUnderstanding | None = None,
+        transitions: list[PlanTransition] | None = None,
+        feasibility: ItineraryFeasibility | None = None,
+    ) -> PlanRead:
         context = None if plan.context is None else ContextRead(
             location=plan.context.location, start_time=plan.context.start_time, end_time=plan.context.end_time,
             group_size=plan.context.group_size, transport_mode=plan.context.transport_mode,
@@ -312,6 +450,8 @@ class PlanRead(BaseModel):
             items=[PlanItemRead.from_item(item) for item in plan.items],
             budget=BudgetRead(**budget.__dict__),
             understanding=u_read,
+            transitions=[PlanTransitionRead.from_domain(t) for t in (transitions or [])],
+            feasibility=ItineraryFeasibilityRead.from_domain(feasibility) if feasibility is not None else None,
         )
 
 
@@ -859,3 +999,66 @@ async def check_plan_health(
         raise _not_found(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/plans/{plan_id}/transitions", response_model=PlanTransitionsResponse)
+async def get_plan_transitions(
+    plan_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    planning_service: Annotated[PlanningService, Depends(get_planning_service)],
+    mobility_service: Annotated[MobilityPlanningService, Depends(get_mobility_planning_service)],
+) -> PlanTransitionsResponse:
+    try:
+        plan = await planning_service.get_plan(current_user.id, plan_id)
+        preferred_modes: list[TransportMode] = []
+        if plan.context and plan.context.transport_mode:
+            try:
+                preferred_modes.append(TransportMode(plan.context.transport_mode.lower()))
+            except ValueError:
+                pass
+        transitions = await mobility_service.evaluate_transitions(
+            plan,
+            party_size=plan.context.group_size if plan.context else 1,
+            preferred_modes=preferred_modes or None,
+        )
+        feasibility = mobility_service.check_plan_feasibility(plan, transitions)
+        return PlanTransitionsResponse(
+            plan_id=plan.id,
+            transitions=[PlanTransitionRead.from_domain(t) for t in transitions],
+            feasibility=ItineraryFeasibilityRead.from_domain(feasibility),
+        )
+    except PlanningNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+
+@router.post("/plans/{plan_id}/transitions/evaluate", response_model=PlanTransitionsResponse)
+async def evaluate_plan_transitions(
+    plan_id: UUID,
+    body: EvaluateTransitionsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    planning_service: Annotated[PlanningService, Depends(get_planning_service)],
+    mobility_service: Annotated[MobilityPlanningService, Depends(get_mobility_planning_service)],
+) -> PlanTransitionsResponse:
+    try:
+        plan = await planning_service.get_plan(current_user.id, plan_id)
+        pref_modes: list[TransportMode] = []
+        if body.preferred_modes:
+            for m in body.preferred_modes:
+                try:
+                    pref_modes.append(TransportMode(m.lower()))
+                except ValueError:
+                    pass
+        transitions = await mobility_service.evaluate_transitions(
+            plan,
+            party_size=body.party_size,
+            preferred_modes=pref_modes or None,
+        )
+        feasibility = mobility_service.check_plan_feasibility(plan, transitions)
+        return PlanTransitionsResponse(
+            plan_id=plan.id,
+            transitions=[PlanTransitionRead.from_domain(t) for t in transitions],
+            feasibility=ItineraryFeasibilityRead.from_domain(feasibility),
+        )
+    except PlanningNotFoundError as exc:
+        raise _not_found(exc) from exc
+

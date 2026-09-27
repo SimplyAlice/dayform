@@ -19,6 +19,7 @@ import {
   IconAlertCircle,
   IconX,
 } from './Icons';
+import { TransitionBadge } from './TransitionBadge';
 
 interface ProposedPlanProps {
   plan: PlanRead;
@@ -126,6 +127,19 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
           </div>
           <p className="adaptation-banner-narrative">
             {adaptationSummary || itinerary.adaptationSummary || 'Adapted itinerary according to your requested change.'}
+          </p>
+        </div>
+      )}
+
+      {/* Transit Feasibility Notice */}
+      {plan.feasibility && !plan.feasibility.is_feasible && plan.feasibility.issues.length > 0 && (
+        <div className="magazine-adaptation-banner" style={{ borderColor: 'var(--color-coral)', background: 'var(--color-coral-subtle)' }}>
+          <div className="adaptation-banner-tag" style={{ color: 'var(--color-coral)' }}>
+            <IconAlertCircle size={14} />
+            <span>TRANSIT FEASIBILITY NOTICE</span>
+          </div>
+          <p className="adaptation-banner-narrative" style={{ color: 'var(--color-ink)' }}>
+            {plan.feasibility.issues.join(' · ')}
           </p>
         </div>
       )}
@@ -407,6 +421,10 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
                         })}
                       </div>
                     </div>
+                  )}
+                  {/* Mobility Transition to Next Stop */}
+                  {!isLast && plan.transitions && plan.transitions[idx] && (
+                    <TransitionBadge transition={plan.transitions[idx]} />
                   )}
                 </div>
               </article>

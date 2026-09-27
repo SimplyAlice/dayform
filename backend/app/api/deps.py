@@ -417,3 +417,12 @@ def get_mobility_service(
 ) -> MobilityService:
     return MobilityService(registry)
 
+
+def get_mobility_planning_service(
+    mobility_service: Annotated[MobilityService, Depends(get_mobility_service)],
+) -> MobilityPlanningService:
+    from app.application.planning.mobility_planning_service import MobilityPlanningService
+
+    return MobilityPlanningService(mobility_service)
+
+

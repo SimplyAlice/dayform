@@ -4,14 +4,17 @@ import type {
   PlanActionsRead,
   PlanHealthCheckRead,
   PlanRead,
+  PlanTransitionRead,
 } from '../types/planning';
 import {
   checkPlanHealth,
   completePlanItem,
   executePlanAction,
   getPlanActions,
+  getPlanTransitions,
   uncompletePlanItem,
 } from '../api/planning';
+import { TransitionBadge } from './TransitionBadge';
 import {
   CategoryIcon,
   IconClock,
@@ -46,6 +49,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
   const [planActions, setPlanActions] = useState<PlanActionsRead | null>(null);
   const [healthCheck, setHealthCheck] = useState<PlanHealthCheckRead | null>(null);
   const [isCheckingHealth, setIsCheckingHealth] = useState(false);
+  const [transitions, setTransitions] = useState<PlanTransitionRead[]>(plan.transitions || []);
   const [executingActionId, setExecutingActionId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{
     message: string;
@@ -86,9 +90,24 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     }
   };
 
+  // Fetch transitions if not already attached
+  const fetchTransitions = async () => {
+    if (plan.transitions && plan.transitions.length > 0) {
+      setTransitions(plan.transitions);
+      return;
+    }
+    try {
+      const data = await getPlanTransitions(plan.id);
+      setTransitions(data.transitions || []);
+    } catch (err) {
+      console.error('Failed to load plan transitions:', err);
+    }
+  };
+
   useEffect(() => {
     fetchActions();
     fetchHealth();
+    fetchTransitions();
   }, [plan.id, plan.updated_at, plan.items.length]);
 
   const handleActionClick = async (itemId: string, action: ExecutionActionRead) => {
@@ -431,6 +450,11 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                             );
                           })}
                         </div>
+                      )}
+
+                      {/* Mobility Transition to Next Stop */}
+                      {!isLast && transitions[idx] && (
+                        <TransitionBadge transition={transitions[idx]} />
                       )}
                     </div>
                   </div>

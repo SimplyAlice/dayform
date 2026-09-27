@@ -21,6 +21,8 @@ class ChangeType(str, Enum):
     EXCLUSION_ADDED = "exclusion_added"
     PREFERENCE_CHANGED = "preference_changed"
     VENUE_INVALIDATED = "venue_invalidated"
+    MOBILITY_DISRUPTION = "mobility_disruption"
+    MOBILITY_PREFERENCE_CHANGED = "mobility_preference_changed"
     OTHER = "other"
 
 

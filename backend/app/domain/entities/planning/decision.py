@@ -30,6 +30,7 @@ class ReasonType(str, Enum):
     SETTING = "setting"
     WEATHER = "weather"
     TRADE_OFF = "trade_off"
+    MOBILITY = "mobility"
 
 
 class ReasonOutcome(str, Enum):

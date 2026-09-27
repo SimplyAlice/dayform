@@ -632,6 +632,22 @@ class PlanAdaptationService:
             changes_detected.append(ChangeType.LOCATION_CHANGED)
             change_details["location"] = loc_matched
 
+        # 9. Mobility Disruption
+        # Matches: "uber is too expensive", "train isn't running", "bus is delayed", "metro cancelled"
+        if any(term in lower for term in ("uber is too expensive", "uber too expensive", "too expensive to get there", "rides too expensive")):
+            changes_detected.append(ChangeType.MOBILITY_DISRUPTION)
+            change_details["mobility_disruption"] = "ride_hail_expensive"
+        elif any(term in lower for term in ("train isn't running", "train is cancelled", "metrorail cancelled", "bus cancelled", "bus delayed")):
+            changes_detected.append(ChangeType.MOBILITY_DISRUPTION)
+            change_details["mobility_disruption"] = "transit_cancelled"
+
+        # 10. Mobility Preference
+        # Matches: "walk instead", "prefer walking", "don't want to drive", "no car", "prefer transit"
+        if any(term in lower for term in ("walk instead", "prefer walking", "don't want to drive", "no car", "prefer public transit")):
+            changes_detected.append(ChangeType.MOBILITY_PREFERENCE_CHANGED)
+            change_details["mobility_preference"] = "walk_or_transit"
+
+
         updated_context = PlanningContext(
             plan_id=plan.id,
             location=new_location,
@@ -875,6 +891,11 @@ class PlanAdaptationService:
             parts.append("closed venue replaced")
         if ChangeType.LOCATION_CHANGED in changes_detected:
             parts.append("neighborhood updated")
+        if ChangeType.MOBILITY_DISRUPTION in changes_detected:
+            parts.append("mobility disruption accounted for")
+        if ChangeType.MOBILITY_PREFERENCE_CHANGED in changes_detected:
+            parts.append("transport preferences updated")
+
 
         detail_parts: list[str] = []
         if kept_count > 0:
