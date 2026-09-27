@@ -32,6 +32,7 @@ from app.application.jobs.ports import JobRepository, JobSourceAdapter
 from app.application.operations.action_recommendation import ActionRecommendationService
 from app.application.operations.incident_investigation import IncidentInvestigationService
 from app.application.operations.operations_service import OperationsService
+from app.application.mobility.live_service import LiveMobilityService, LiveStatusRegistry
 from app.application.mobility.registry import MobilityProviderRegistry
 from app.application.mobility.service import MobilityService
 from app.application.planning.adaptation_service import PlanAdaptationService
@@ -420,9 +421,58 @@ def get_mobility_service(
 
 def get_mobility_planning_service(
     mobility_service: Annotated[MobilityService, Depends(get_mobility_service)],
+    live_mobility_service: Annotated["LiveMobilityService", Depends(get_live_mobility_service)],
 ) -> MobilityPlanningService:
     from app.application.planning.mobility_planning_service import MobilityPlanningService
 
-    return MobilityPlanningService(mobility_service)
+    return MobilityPlanningService(mobility_service, live_mobility_service)
+
+
+_default_live_status_registry: LiveStatusRegistry | None = None
+
+
+def _build_live_status_registry() -> LiveStatusRegistry:
+    """Wire a live feed per provider, only where one is explicitly configured.
+
+    Operators without a configured feed are simply absent from the registry, so
+    they report live status as unavailable rather than as a stale or guessed value.
+    """
+    from app.infrastructure.mobility.live import HttpJsonLiveStatusSource
+
+    registry = LiveStatusRegistry()
+    for provider_id, url in get_settings().mobility_live_feed_urls.items():
+        provider = _find_registered_provider(provider_id)
+        if provider is None:
+            continue
+        registry.register(
+            provider_id,
+            HttpJsonLiveStatusSource(
+                url=url,
+                provider_id=provider_id,
+                provider_name=provider.capability.name,
+            ),
+        )
+    return registry
+
+
+def _find_registered_provider(provider_id: str):
+    for provider in get_mobility_registry().get_enabled_providers():
+        if provider.capability.provider_id == provider_id:
+            return provider
+    return None
+
+
+def get_live_status_registry() -> LiveStatusRegistry:
+    global _default_live_status_registry
+    if _default_live_status_registry is None:
+        _default_live_status_registry = _build_live_status_registry()
+    return _default_live_status_registry
+
+
+def get_live_mobility_service(
+    registry: Annotated[MobilityProviderRegistry, Depends(get_mobility_registry)],
+    live_registry: Annotated[LiveStatusRegistry, Depends(get_live_status_registry)],
+) -> LiveMobilityService:
+    return LiveMobilityService(registry, live_registry)
 
 

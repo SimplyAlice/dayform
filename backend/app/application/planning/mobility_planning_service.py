@@ -8,6 +8,8 @@ from typing import Sequence
 from uuid import UUID
 
 from app.application.mobility.service import MobilityService
+from app.application.mobility.live_service import LiveMobilityService
+from app.domain.entities.mobility.live import MobilityLiveStatusReport
 from app.domain.entities.mobility.enums import (
     BookingCapability,
     MobilityLiveStatus,
@@ -41,8 +43,15 @@ class StopSequencePoint:
 class MobilityPlanningService:
     """Evaluates physical transport feasibility between itinerary stops in a plan."""
 
-    def __init__(self, mobility_service: MobilityService) -> None:
+    def __init__(
+        self,
+        mobility_service: MobilityService,
+        live_mobility_service: LiveMobilityService | None = None,
+    ) -> None:
         self._mobility_service = mobility_service
+        # Live intelligence is optional: without it transitions still evaluate,
+        # they simply carry no live state and stay truthfully 'unavailable'.
+        self._live_mobility_service = live_mobility_service
 
     async def evaluate_stop_sequence(
         self,
@@ -71,6 +80,7 @@ class MobilityPlanningService:
                 preferred_modes=preferred_modes or [],
             )
             if transition is not None:
+                await self._apply_live_status(transition, a.location.strip(), b.location.strip())
                 transitions.append(transition)
         return transitions
 
@@ -178,6 +188,32 @@ class MobilityPlanningService:
             feasibility_issue=feasibility_issue,
         )
 
+    async def _apply_live_status(
+        self, transition: PlanTransition, origin: str, destination: str
+    ) -> None:
+        """Overlay M16 live service state onto a transition, if a live layer exists.
+
+        Failures degrade to the transition's default 'unavailable' live state; a
+        live outage must never prevent an itinerary from being produced.
+        """
+        if self._live_mobility_service is None:
+            return
+        try:
+            report: MobilityLiveStatusReport = await self._live_mobility_service.get_live_status(
+                provider_id=transition.provider_id,
+                origin=origin,
+                destination=destination,
+            )
+        except Exception as e:
+            logger.error(
+                "Live mobility status lookup for %s failed: %s",
+                transition.provider_id,
+                e,
+                exc_info=True,
+            )
+            return
+        transition.apply_live_status(report)
+
     async def evaluate_transitions(
         self,
         plan: Plan,
@@ -218,6 +254,7 @@ class MobilityPlanningService:
             # Re-attach the persisted item ids the leg was derived from.
             transition.from_item_id = item_a.id
             transition.to_item_id = item_b.id
+            await self._apply_live_status(transition, loc_a, loc_b)
             transitions.append(transition)
 
         return transitions

@@ -7,11 +7,13 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.api.deps import get_mobility_service
+from app.api.deps import get_live_mobility_service, get_mobility_service
 from app.application.mobility.dtos import MobilityRequirementDTO
+from app.application.mobility.live_service import LiveMobilityService
 from app.application.mobility.service import MobilityService
 from app.domain.entities.mobility.enums import (
     BookingCapability,
+    MobilityLiveAvailability,
     MobilityLiveStatus,
     MobilitySourceType,
     TransportMode,
@@ -217,3 +219,62 @@ def get_mobility_providers(
         )
         for c in caps
     ]
+
+
+class MobilityLiveStatusResponse(BaseModel):
+    provider_id: str
+    provider_name: str
+    status: MobilityLiveStatus
+    availability: MobilityLiveAvailability
+    explanation: str
+    source: str
+    source_type: MobilitySourceType
+    observed_at: datetime | None
+    retrieved_at: datetime
+    confidence: float
+    delay_minutes: int | None
+    expected_departure: datetime | None
+    expected_arrival: datetime | None
+    is_stale: bool
+    is_blocking: bool
+    freshness_minutes: int | None
+
+
+@router.get(
+    "/live-status",
+    response_model=MobilityLiveStatusResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Current live service status for a mobility provider",
+)
+async def get_mobility_live_status(
+    provider_id: str,
+    live_service: Annotated[LiveMobilityService, Depends(get_live_mobility_service)],
+    origin: str | None = None,
+    destination: str | None = None,
+) -> MobilityLiveStatusResponse:
+    """Report what is genuinely known about a provider's live service state.
+
+    Providers without a reachable public feed return availability=unavailable with
+    status=unknown. This endpoint never fabricates a status, delay or ETA.
+    """
+    report = await live_service.get_live_status(
+        provider_id=provider_id, origin=origin, destination=destination
+    )
+    return MobilityLiveStatusResponse(
+        provider_id=report.provider_id,
+        provider_name=report.provider_name,
+        status=report.effective_status(),
+        availability=report.availability,
+        explanation=report.explanation,
+        source=report.source,
+        source_type=report.source_type,
+        observed_at=report.observed_at,
+        retrieved_at=report.retrieved_at,
+        confidence=report.confidence,
+        delay_minutes=report.delay_minutes,
+        expected_departure=report.expected_departure,
+        expected_arrival=report.expected_arrival,
+        is_stale=report.is_stale,
+        is_blocking=report.is_blocking,
+        freshness_minutes=report.freshness_minutes,
+    )

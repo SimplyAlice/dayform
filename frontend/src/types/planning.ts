@@ -183,6 +183,14 @@ export interface PlanTransitionRead {
   summary: string;
   is_feasible: boolean;
   feasibility_issue?: string | null;
+  /** M16 live mobility. `unavailable` means the provider has no live source at all. */
+  live_availability?: 'live' | 'stale' | 'unavailable';
+  live_explanation?: string | null;
+  live_source?: string | null;
+  live_source_type?: string;
+  live_observed_at?: string | null;
+  live_confidence?: number;
+  live_delay_minutes?: number | null;
   available_options?: PlanTransitionOptionRead[];
 }
 

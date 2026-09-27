@@ -15,6 +15,39 @@ interface TransitionBadgeProps {
   className?: string;
 }
 
+/** M16 live state, expressed for the user without overstating what is known. */
+function describeLiveState(transition: PlanTransitionRead): {
+  tone: 'live' | 'warn' | 'alert' | 'muted';
+  label: string;
+} | null {
+  const availability = transition.live_availability ?? 'unavailable';
+  const status = (transition.live_status || 'unknown').toLowerCase();
+
+  // A provider with no live source is described as such, never as "live".
+  if (availability === 'unavailable') {
+    return { tone: 'muted', label: 'No live feed' };
+  }
+  if (availability === 'stale' || status === 'unknown') {
+    return { tone: 'muted', label: 'Live status unavailable' };
+  }
+  if (status === 'operating_normal' || status === 'live' || status === 'on_time') {
+    return { tone: 'live', label: 'Live · operating normally' };
+  }
+  if (status === 'delayed') {
+    const delay = transition.live_delay_minutes;
+    return {
+      tone: 'warn',
+      label: delay ? `Live · delayed ${delay} min` : 'Live · delayed',
+    };
+  }
+  if (status === 'disrupted') return { tone: 'alert', label: 'Live · disrupted' };
+  if (status === 'cancelled') return { tone: 'alert', label: 'Live · cancelled' };
+  if (status === 'service_unavailable') {
+    return { tone: 'alert', label: 'Live · service unavailable' };
+  }
+  return { tone: 'muted', label: 'Live status unavailable' };
+}
+
 export const TransitionBadge: React.FC<TransitionBadgeProps> = ({
   transition,
   className = '',
@@ -45,6 +78,8 @@ export const TransitionBadge: React.FC<TransitionBadgeProps> = ({
     : transition.mode === 'walk'
     ? 'Free'
     : 'Fare in app';
+
+  const live = describeLiveState(transition);
 
   return (
     <div
@@ -77,10 +112,16 @@ export const TransitionBadge: React.FC<TransitionBadgeProps> = ({
           )}
         </div>
 
-        {transition.live_status && transition.live_status !== 'unknown' && transition.live_status !== 'normal' && (
-          <div className="transition-live-tag">
+        {live && (
+          <div
+            className={`transition-live-tag tone-${live.tone}`}
+            title={
+              transition.live_explanation ||
+              'Live service status is not available for this provider.'
+            }
+          >
             <span className="live-dot" />
-            <span>{transition.live_status.toUpperCase()}</span>
+            <span>{live.label}</span>
           </div>
         )}
       </div>

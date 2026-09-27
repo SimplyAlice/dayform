@@ -25,9 +25,35 @@ class MobilityLiveStatus(str, Enum):
     SCHEDULED = "scheduled"
     ESTIMATED = "estimated"
     LIVE = "live"
+    OPERATING_NORMAL = "operating_normal"
     DELAYED = "delayed"
+    DISRUPTED = "disrupted"
     CANCELLED = "cancelled"
+    SERVICE_UNAVAILABLE = "service_unavailable"
     UNKNOWN = "unknown"
+
+
+class MobilityLiveAvailability(str, Enum):
+    """How trustworthy the live status itself is.
+
+    Separates "we asked a live source and it answered" from "we have no live source
+    at all", so a provider without a public feed is never presented as merely unknown
+    data rather than a genuinely absent capability.
+    """
+
+    LIVE = "live"
+    STALE = "stale"
+    UNAVAILABLE = "unavailable"
+
+
+#: Statuses that mean the service cannot be relied upon as planned.
+BLOCKING_LIVE_STATUSES = frozenset(
+    {
+        MobilityLiveStatus.CANCELLED,
+        MobilityLiveStatus.DISRUPTED,
+        MobilityLiveStatus.SERVICE_UNAVAILABLE,
+    }
+)
 
 
 class MobilitySourceType(str, Enum):

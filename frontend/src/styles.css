@@ -4594,7 +4594,30 @@ body {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #d97706;
+  background: currentColor;
+}
+
+/* M16 live service states. Tones mirror the existing amber/red/green language. */
+.transition-live-tag.tone-live {
+  color: #047857;
+  background: #d1fae5;
+}
+
+.transition-live-tag.tone-warn {
+  color: #d97706;
+  background: #fef3c7;
+}
+
+.transition-live-tag.tone-alert {
+  color: #b91c1c;
+  background: #fee2e2;
+}
+
+/* No live source is a normal, expected state, so it stays visually quiet. */
+.transition-live-tag.tone-muted {
+  color: #6b7280;
+  background: #f3f4f6;
+  font-weight: 600;
 }
 
 .transition-feasibility-alert {

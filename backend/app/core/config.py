@@ -110,6 +110,15 @@ class Settings(BaseSettings):
     planning_provider: str = Field(default="openstreetmap", description="Active planning information provider ('openstreetmap' or 'fixture').")
     openstreetmap_timeout_seconds: float = Field(default=3.0, description="HTTP timeout for live OSM geocoder queries.")
 
+    # M16 live mobility feeds. Maps a mobility provider id (e.g. "myciti") to the
+    # URL of a public JSON service-status feed. Empty by default: a provider with
+    # no entry here is reported as having no live source at all, which is the
+    # truthful state for every current Cape Town transit operator.
+    mobility_live_feed_urls: dict[str, str] = Field(
+        default_factory=dict,
+        description="Provider id -> public JSON live service-status feed URL.",
+    )
+
     # --- Job sources (Milestone 3) --------------------------------------------
     # Optional (default None) so an environment without real Adzuna
     # credentials still starts up normally — the ingestion endpoint returns

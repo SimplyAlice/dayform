@@ -334,6 +334,15 @@ class PlanTransitionRead(BaseModel):
     summary: str
     is_feasible: bool = True
     feasibility_issue: str | None = None
+    # M16 live mobility state. `unavailable` means no live source exists for this
+    # provider, which is distinct from live data that simply could not be fetched.
+    live_availability: str = "unavailable"
+    live_explanation: str | None = None
+    live_source: str | None = None
+    live_source_type: str = "unknown"
+    live_observed_at: datetime | None = None
+    live_confidence: float = 0.0
+    live_delay_minutes: int | None = None
     available_options: list[PlanTransitionOptionRead] = Field(default_factory=list)
 
     @classmethod
@@ -361,6 +370,13 @@ class PlanTransitionRead(BaseModel):
             summary=t.summary,
             is_feasible=t.is_feasible,
             feasibility_issue=t.feasibility_issue,
+            live_availability=t.live_availability.value if hasattr(t.live_availability, "value") else str(t.live_availability),
+            live_explanation=t.live_explanation,
+            live_source=t.live_source,
+            live_source_type=t.live_source_type.value if hasattr(t.live_source_type, "value") else str(t.live_source_type),
+            live_observed_at=t.live_observed_at,
+            live_confidence=t.live_confidence,
+            live_delay_minutes=t.live_delay_minutes,
             available_options=[PlanTransitionOptionRead.from_option(o) for o in t.available_options],
         )
 
