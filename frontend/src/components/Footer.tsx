@@ -32,7 +32,7 @@ export const Footer: React.FC<FooterProps> = ({ onStartPlanning, onOpenLibrary }
             </a>
             {onOpenLibrary && (
               <button type="button" className="footer-link" onClick={onOpenLibrary}>
-                Plan Library
+                Saved Plans
               </button>
             )}
           </div>

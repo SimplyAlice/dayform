@@ -102,7 +102,7 @@ export const PlanLibrary: React.FC<PlanLibraryProps> = ({ onOpenPlan, onNewPlan 
       <div className="library-header-strip">
         <div className="library-title-group">
           <span className="library-kicker">YOUR COLLECTION</span>
-          <h1 className="library-headline">Plan Library</h1>
+          <h1 className="library-headline">Saved Plans</h1>
           <p className="library-lead">
             Every itinerary you have shaped and saved, ready to reopen and explore.
           </p>

@@ -190,10 +190,9 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
 
     const handleSelectPrompt = (promptText: string) => {
       setIntent(promptText);
-      setStep('intent');
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-      }
+      setLocationError(null);
+      setStep('decision');
+      setTimeout(() => locationInputRef.current?.focus(), 100);
     };
 
     const handleScrollDown = () => {
@@ -290,7 +289,7 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
 
                 {/* 1. Starting Location */}
                 <div className="predraft-decision-block">
-                  <span className="predraft-decision-label">Starting location</span>
+                  <span className="predraft-decision-label">Where are you starting?</span>
                   <div className="location-action-bar">
                     <button
                       type="button"
@@ -321,8 +320,14 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
                         placeholder="Or enter neighbourhood (e.g. Cape Town CBD, Sea Point…)"
                         value={originDraft}
                         onChange={(e) => setOriginDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleFinalDraftSubmit();
+                          }
+                        }}
                         disabled={isLoading || isLocating}
-                        aria-label="Starting location"
+                        aria-label="Where are you starting?"
                       />
                     </div>
 

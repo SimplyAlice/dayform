@@ -141,7 +141,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                 onSwitchView?.('library');
               }}
             >
-              Plan Library
+              Saved Plans
             </button>
             {hasActivePlan && (
               <button
@@ -245,13 +245,13 @@ export const Navigation: React.FC<NavigationProps> = ({
               </button>
               <button
                 type="button"
-                className="mobile-nav-item"
+                className={`mobile-nav-item ${viewMode === 'library' ? 'highlight' : ''}`}
                 onClick={() => {
                   setMobileMenuOpen(false);
                   onSwitchView?.('library');
                 }}
               >
-                <span>Plan Library</span>
+                <span>Saved Plans</span>
                 <IconArrowRight size={16} />
               </button>
               {hasActivePlan && (
