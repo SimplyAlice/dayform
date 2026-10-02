@@ -1,0 +1,691 @@
+/* ==========================================================================
+   DAYFORM — THE SIX SCENES
+   ==========================================================================
+
+   One experience, told in six scenes:
+
+       01  THE INTENTION
+       02  THE UNDERSTANDING
+       03  THE INTELLIGENCE
+       04  THE ITINERARY
+       05  THE ADAPTATION
+       06  THE EXECUTION
+
+   The failure this file exists to prevent is the page reading as
+   "navigation -> form -> card -> card -> card -> card". A scene is not a
+   container. A scene has a number, a name, one large statement, and then
+   exactly one thing that matters most — with everything else pushed down the
+   scale until it reads as support rather than as competition.
+
+   The rhythm is deliberate and repeats:
+
+       very large  ->  small  ->  large  ->  small
+
+   So the eye moves in editorial steps instead of scanning a list of peers.
+
+   Nothing here hides information. The density problems were solved by
+   establishing PRIMARY / SECONDARY / SUPPORTING, and by progressive
+   disclosure — never by deleting a fact the user is owed.
+   ========================================================================== */
+
+:root {
+  /* The scene scale. Each step is a visible jump, not a nudge, so that a
+     chapter number never competes with a section title. */
+  --df-scene-num: clamp(88px, 15vw, 190px);
+  --df-scene-title: clamp(34px, 5.4vw, 66px);
+  --df-scene-kicker: 11px;
+  --df-scene-lede: clamp(17px, 1.7vw, 21px);
+
+  /* Scene rhythm. Generous on purpose: whitespace is what makes six scenes
+     feel like six scenes instead of one long page. */
+  --df-scene-pad-y: clamp(72px, 11vh, 132px);
+  --df-scene-gap: clamp(28px, 4.4vh, 52px);
+  --df-scene-max: 1080px;
+  --df-scene-measure: 62ch;
+
+  /* Editorial hairline. One border weight for the whole experience. */
+  --df-rule: 1px solid var(--border-subtle, rgba(24, 24, 27, 0.09));
+  --df-rule-strong: 1px solid rgba(24, 24, 27, 0.16);
+}
+
+/* ==========================================================================
+   THE SCENE
+   ========================================================================== */
+
+.df-scene {
+  position: relative;
+  isolation: isolate;
+  margin: 0 auto;
+  max-width: var(--df-scene-max);
+  padding: var(--df-scene-pad-y) var(--df-space-5);
+}
+
+/* The chapter number. Present, enormous, and almost transparent — it is a
+   folio in a magazine, not a heading. It sits behind the kicker so the two
+   read as one mark rather than as two competing labels. */
+.df-scene-head {
+  position: relative;
+  margin-bottom: var(--df-scene-gap);
+}
+
+.df-scene-num {
+  position: absolute;
+  top: -0.16em;
+  left: -0.06em;
+  z-index: -1;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--df-scene-num);
+  font-weight: 400;
+  line-height: 0.78;
+  letter-spacing: -0.05em;
+  color: var(--text-primary);
+  opacity: 0.055;
+  pointer-events: none;
+  user-select: none;
+  font-variant-numeric: lining-nums;
+}
+
+.df-scene-kicker {
+  margin: 0 0 var(--df-space-3);
+  font-size: var(--df-scene-kicker);
+  font-weight: 700;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--color-coral);
+}
+
+.df-scene-title {
+  margin: 0;
+  max-width: 18ch;
+  font-family: var(--font-display);
+  font-size: var(--df-scene-title);
+  font-weight: 400;
+  line-height: 1.02;
+  letter-spacing: -0.025em;
+  color: #ffffff;
+  text-wrap: balance;
+}
+
+.df-scene-title em {
+  font-style: italic;
+  color: var(--color-coral);
+}
+
+.df-scene-lede {
+  margin: var(--df-space-5) 0 0;
+  max-width: var(--df-scene-measure);
+  font-size: var(--df-scene-lede);
+  line-height: 1.62;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.df-scene-foot {
+  margin-top: var(--df-scene-gap);
+  padding-top: var(--df-space-5);
+  border-top: var(--df-rule);
+  font-size: var(--df-text-meta);
+  color: var(--text-tertiary);
+}
+
+/* ==========================================================================
+   THE RAIL — 01 through 06
+   ==========================================================================
+
+   A persistent, quiet folio. Not a checkout stepper: no fills, no ticks that
+   beg for attention, no "step 2 of 6". It is a table of contents for the
+   user's own day, and it is only ever as prominent as a running head.
+   ========================================================================== */
+
+.df-rail {
+  position: fixed;
+  left: clamp(14px, 2.1vw, 34px);
+  top: 50%;
+  z-index: 40;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  pointer-events: none;
+}
+
+.df-rail-item {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 3px 0;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+  opacity: 0.34;
+  transition: opacity var(--df-mid) var(--df-ease), color var(--df-mid) var(--df-ease);
+}
+
+.df-rail-num {
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.df-rail-name {
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+/* The tick sits in the margin, not in the label, so the rail keeps its
+   editorial quietness while still saying where the user is. */
+.df-rail-tick {
+  width: 14px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0;
+  transform: scaleX(0.3);
+  transform-origin: left;
+  transition: opacity var(--df-mid) var(--df-ease), transform var(--df-mid) var(--df-ease);
+}
+
+.df-rail-item.is-done {
+  opacity: 0.5;
+}
+
+.df-rail-item.is-done .df-rail-tick {
+  opacity: 0.7;
+  transform: scaleX(1);
+}
+
+.df-rail-item.is-current {
+  opacity: 1;
+  color: var(--color-coral);
+}
+
+.df-rail-item.is-current .df-rail-tick {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+/* On a laptop the rail sits in the margin. On a narrow screen there is no
+   margin, so it becomes a single quiet line under the nav instead of
+   disappearing — the user should always be able to see where they are. */
+@media (max-width: 1180px) {
+  .df-rail {
+    position: static;
+    transform: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    max-width: var(--df-scene-max);
+    margin: 0 auto;
+    padding: 0 var(--df-space-5) var(--df-space-5);
+    pointer-events: auto;
+  }
+  .df-rail-name {
+    display: none;
+  }
+  .df-rail-item {
+    padding: 0;
+  }
+  .df-rail-tick {
+    width: 10px;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   THE LIGHT, AS A SYSTEM
+
+   One warm drift, recurring at every scene, changing character as the story
+   moves: fullest at the moment of understanding, a held glow through the
+   itinerary, and barely there at execution — the user is out of the page by
+   then and it should feel like it.
+
+   Deliberately not six glowing blobs. The same light, at different volumes.
+   -------------------------------------------------------------------------- */
+
+.df-light--soft {
+  --df-light-scale: 0.62;
+}
+
+.df-light--still {
+  --df-light-scale: 0.38;
+}
+
+.df-light--quiet {
+  --df-light-scale: 0.2;
+}
+
+.df-light::before {
+  transform: scale(var(--df-light-scale, 1));
+}
+
+/* ==========================================================================
+   THE TRANSFORMATION  (scene 02)
+
+   The user's sentence is the raw material and the blueprint is what it became.
+   They are shown in the same frame, the sentence visibly giving way to
+   structure — which is the whole emotional claim of the scene.
+   ========================================================================== */
+
+.df-transform-source {
+  display: block;
+  margin: 0 0 var(--df-scene-gap);
+  padding: 0 0 var(--df-space-5);
+  border-bottom: var(--df-rule);
+  font-family: var(--font-display);
+  font-style: italic;
+  font-size: clamp(19px, 2.3vw, 27px);
+  line-height: 1.42;
+  color: var(--text-secondary);
+  max-width: 46ch;
+}
+
+.df-transform-source::before {
+  content: '“';
+  margin-right: 2px;
+  color: var(--color-coral);
+  opacity: 0.6;
+}
+
+.df-transform-source::after {
+  content: '”';
+  margin-left: 2px;
+  color: var(--color-coral);
+  opacity: 0.6;
+}
+
+/* The blueprint that the sentence resolved into. */
+.df-transform-out {
+  display: flex;
+  flex-direction: column;
+  gap: var(--df-space-6);
+}
+
+/* A resolved token: the thing the sentence turned into. Big enough to be the
+   payload of the scene, quiet enough not to shout. */
+.df-token {
+  display: flex;
+  align-items: baseline;
+  gap: var(--df-space-3);
+  font-family: var(--font-display);
+  font-size: clamp(21px, 2.6vw, 30px);
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+  color: var(--text-primary);
+}
+
+.df-token-glyph {
+  flex: none;
+  width: 1.5em;
+  color: var(--color-coral);
+  font-size: 0.62em;
+  line-height: 1;
+  transform: translateY(-0.1em);
+}
+
+.df-token-text {
+  min-width: 0;
+}
+
+.df-token-detail {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--font-sans);
+  font-size: var(--df-text-meta);
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+/* ==========================================================================
+   THE INTELLIGENCE  (scene 03)
+
+   Real constraint solving, made legible. Every row is a constraint the engine
+   actually evaluated, and the numbers are counts of real outcomes — not a
+   decorative animation standing in for thought. There is no typing, no
+   "thinking...", and nothing here implies a capability the product lacks.
+   ========================================================================== */
+
+.df-trace {
+  display: flex;
+  flex-direction: column;
+  border-top: var(--df-rule);
+}
+
+.df-trace-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 0.5fr) 1.1fr 1.6fr auto;
+  align-items: center;
+  gap: var(--df-space-4);
+  padding: var(--df-space-4) 0;
+  border-bottom: var(--df-rule);
+}
+
+.df-trace-constraint {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: var(--df-text-meta);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-primary);
+}
+
+.df-trace-glyph {
+  color: var(--text-tertiary);
+  font-size: 13px;
+}
+
+.df-trace-verdict {
+  font-size: var(--df-text-body);
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.df-trace-counts {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: flex-end;
+  font-size: var(--df-text-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.df-trace-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* A thin two-tone bar: how many venues cleared this constraint, and how many
+   did not. Reads at a glance, carries no colour alarm on its own. */
+.df-trace-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  height: 2px;
+  margin-top: -6px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(24, 24, 27, 0.07);
+}
+
+.df-trace-bar-pass {
+  background: var(--df-state-ok);
+  opacity: 0.55;
+}
+
+.df-trace-bar-fail {
+  background: var(--df-state-miss);
+  opacity: 0.3;
+}
+
+.df-trace-count.is-pass {
+  color: var(--df-state-ok);
+}
+
+.df-trace-count.is-fail {
+  color: var(--df-state-miss);
+}
+
+/* The engine's own sentences, held back until asked for. Present in the
+   markup either way, so this is a depth decision, not a data decision. */
+.df-trace-evidence {
+  grid-column: 1 / -1;
+  padding-top: 2px;
+}
+
+.df-trace-more {
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid currentColor;
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--df-text-meta);
+  color: var(--text-tertiary);
+  transition: color var(--df-fast) var(--df-ease);
+}
+
+.df-trace-more:hover {
+  color: var(--text-primary);
+}
+
+.df-trace-more:focus-visible {
+  outline: 2px solid var(--color-coral);
+  outline-offset: 3px;
+}
+
+.df-trace-evidence-list {
+  margin: var(--df-space-3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.df-trace-evidence-list li {
+  padding-left: var(--df-space-4);
+  position: relative;
+  font-size: var(--df-text-meta);
+  line-height: 1.55;
+  color: var(--text-tertiary);
+}
+
+.df-trace-evidence-list li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.62em;
+  width: 6px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.5;
+}
+
+.df-trace-foot {
+  margin: var(--df-space-5) 0 0;
+  padding-top: var(--df-space-4);
+  border-top: var(--df-rule);
+  max-width: var(--df-scene-measure);
+}
+
+@media (max-width: 760px) {
+  .df-trace-row {
+    grid-template-columns: 1fr auto;
+    gap: var(--df-space-2) var(--df-space-3);
+  }
+  .df-trace-verdict {
+    grid-column: 1 / -1;
+  }
+  .df-trace-counts {
+    justify-content: flex-end;
+  }
+}
+
+/* ==========================================================================
+   THE PAYOFF  (scene 04)
+
+   The itinerary is the answer to everything the user just asked. It is
+   therefore given the largest type on the page after the scene title, and the
+   clock is allowed to be a real character rather than a label in a table.
+   ========================================================================== */
+
+.df-itinerary-scene .df-journey-lead {
+  margin: 0 0 var(--df-space-6);
+  max-width: 54ch;
+  font-size: var(--df-scene-lede);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+/* ==========================================================================
+   DETAIL TIERS
+   ==========================================================================
+
+   The page was competing with itself: budget matrix, travel totals, transport
+   caveats, registry notes, evidence, disclosures — all at full strength, all
+   at once, all before the day itself.
+
+   The fix is three explicit tiers, not deletion. Nothing is lost; the
+   supporting tier simply waits to be asked for.
+   ========================================================================== */
+
+.df-details {
+  margin-top: var(--df-space-6);
+  border-top: var(--df-rule);
+}
+
+.df-details > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--df-space-3);
+  padding: var(--df-space-4) 0;
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--df-text-meta);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-butter);
+  transition: color var(--df-fast) var(--df-ease);
+}
+
+.df-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.df-details > summary:hover {
+  color: #ffffff;
+}
+
+.df-details > summary:focus-visible {
+  outline: 2px solid var(--color-coral);
+  outline-offset: 3px;
+}
+
+/* The marker is a hairline that rotates, so opening the drawer is a
+   continuation of the same visual language rather than a new icon. */
+.df-details-caret {
+  width: 9px;
+  height: 9px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--df-mid) var(--df-ease);
+}
+
+.df-details[open] .df-details-caret {
+  transform: rotate(45deg);
+}
+
+.df-details-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  font-weight: 500;
+}
+
+.df-details-body {
+  padding: var(--df-space-2) 0 var(--df-space-5);
+}
+
+/* Supporting copy is real and stays readable — it is just held at the meta
+   scale so it reads as a footnote with weight, not as a headline. */
+.df-support {
+  font-size: var(--df-text-meta);
+  line-height: 1.6;
+  color: var(--text-tertiary);
+}
+
+.df-support strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   MOTION CHOREOGRAPHY
+
+   Six scenes, one continuous unfold. The shared rule: an element enters once,
+   from below, in reading order, and the delays step down the page so a scroll
+   reads as a sequence rather than as a pile of independent fades.
+   ========================================================================== */
+
+@keyframes df-scene-in {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.df-scene,
+.df-scene > * {
+  animation: df-scene-in 620ms var(--df-ease) both;
+}
+
+/* The step-down. Each successive child arrives a beat later than the last, so
+   the scene assembles itself in front of the reader. */
+.df-scene > *:nth-child(1) { animation-delay: 0ms; }
+.df-scene > *:nth-child(2) { animation-delay: 70ms; }
+.df-scene > *:nth-child(3) { animation-delay: 140ms; }
+.df-scene > *:nth-child(4) { animation-delay: 210ms; }
+.df-scene > *:nth-child(5) { animation-delay: 280ms; }
+.df-scene > *:nth-child(n + 6) { animation-delay: 350ms; }
+
+/* A requirement resolving one at a time. */
+.df-token {
+  animation: df-scene-in 520ms var(--df-ease) both;
+}
+
+.df-token:nth-child(1) { animation-delay: 120ms; }
+.df-token:nth-child(2) { animation-delay: 200ms; }
+.df-token:nth-child(3) { animation-delay: 280ms; }
+.df-token:nth-child(4) { animation-delay: 360ms; }
+.df-token:nth-child(5) { animation-delay: 440ms; }
+.df-token:nth-child(n + 6) { animation-delay: 520ms; }
+
+/* A constraint resolving. */
+.df-trace-row {
+  animation: df-scene-in 480ms var(--df-ease) both;
+}
+
+.df-trace-row:nth-child(1) { animation-delay: 80ms; }
+.df-trace-row:nth-child(2) { animation-delay: 170ms; }
+.df-trace-row:nth-child(3) { animation-delay: 260ms; }
+.df-trace-row:nth-child(4) { animation-delay: 350ms; }
+.df-trace-row:nth-child(5) { animation-delay: 440ms; }
+.df-trace-row:nth-child(n + 6) { animation-delay: 530ms; }
+
+/* ==========================================================================
+   ACCESSIBILITY
+
+   Motion here is decoration. Everything it conveys is also in the text, so
+   removing it costs the reader nothing.
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  .df-scene,
+  .df-scene > *,
+  .df-token,
+  .df-trace-row {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .df-rail-tick,
+  .df-details-caret {
+    transition: none !important;
+  }
+}
+
+/* Only the current scene is dramatised; the rest of the page should not
+   re-animate on every render. */
+@media (prefers-reduced-motion: no-preference) {
+  .df-rail-item,
+  .df-details > summary {
+    will-change: opacity, transform;
+  }
+}

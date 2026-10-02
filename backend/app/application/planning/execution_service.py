@@ -23,6 +23,11 @@ from uuid import UUID
 from app.application.planning.errors import OptionNotFoundError, PlanItemNotFoundError, PlanningNotFoundError
 from app.application.planning.information import PlanningInformationService
 from app.application.planning.planning_service import PlanningService
+from app.application.planning.venue_actions import (
+    contact_fallback_label,
+    derive_venue_action_specs,
+    is_valid_web_url,
+)
 from app.domain.entities.planning.execution import (
     ExecutionAction,
     ExecutionActionStatus,
@@ -42,6 +47,9 @@ class PlanItemActions:
     item_name: str
     item_status: str
     actions: list[ExecutionAction]
+    opening_hours: str | None = None
+    address: str | None = None
+    contact_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,11 +83,15 @@ class PlanExecutionService:
         for item in plan.items:
             matched_option = self._match_item_to_option(item, all_places, all_activities)
             actions = self._derive_item_actions(item, matched_option)
+            hint = self._derive_item_hint(item, matched_option)
             item_status_val = (
                 item.status.value if hasattr(item.status, "value") else str(item.status)
             )
             if item_status_val == PlanItemStatus.COMPLETED.value:
                 completed_count += 1
+
+            matched_hours = getattr(matched_option, "opening_hours", None) if matched_option else None
+            matched_address = (getattr(matched_option, "address", None) if matched_option else None) or item.location
 
             item_actions_list.append(
                 PlanItemActions(
@@ -87,6 +99,9 @@ class PlanExecutionService:
                     item_name=item.name,
                     item_status=item_status_val,
                     actions=actions,
+                    opening_hours=matched_hours,
+                    address=matched_address,
+                    contact_hint=hint,
                 )
             )
 
@@ -258,73 +273,38 @@ class PlanExecutionService:
         item: PlanItem,
         matched: Place | Activity | None,
     ) -> list[ExecutionAction]:
-        """Derive truthful, contextual execution actions for an item."""
+        """Derive truthful, contextual execution actions for an item.
+
+        The venue-level actions come from the shared derivation so a proposed
+        (not yet persisted) stop offers exactly the same actions as a saved one.
+        """
         actions: list[ExecutionAction] = []
         source_url = matched.source_url if matched else None
         address = (matched.address if matched and matched.address else None) or item.location
         phone = matched.phone if matched else None
         reservation_url = matched.reservation_url if matched else None
 
-        # 1. Official Website
-        if source_url and self._is_valid_web_url(source_url):
+        labels = {
+            ExecutionActionType.OPEN_WEBSITE: "Visit website",
+            ExecutionActionType.DIRECTIONS: "Get directions",
+        }
+        for spec in derive_venue_action_specs(
+            name=item.name,
+            location=address,
+            source_url=source_url,
+            phone=phone,
+            reservation_url=reservation_url,
+        ):
             actions.append(
                 ExecutionAction(
-                    id=f"act-website-{item.id}",
+                    id=f"act-{spec.action_type.value}-{item.id}",
                     item_id=item.id,
-                    action_type=ExecutionActionType.OPEN_WEBSITE,
-                    label="Visit website",
-                    target_url=source_url,
+                    action_type=spec.action_type,
+                    label=labels.get(spec.action_type, spec.label),
+                    target_url=spec.target_url,
                     is_available=True,
                     status=ExecutionActionStatus.AVAILABLE,
-                    description=f"Visit official website of {item.name}",
-                )
-            )
-
-        # 2. Directions
-        if address and address.strip():
-            encoded = urllib.parse.quote_plus(address.strip())
-            maps_url = f"https://www.google.com/maps/search/?api=1&query={encoded}"
-            actions.append(
-                ExecutionAction(
-                    id=f"act-directions-{item.id}",
-                    item_id=item.id,
-                    action_type=ExecutionActionType.DIRECTIONS,
-                    label="Get directions",
-                    target_url=maps_url,
-                    is_available=True,
-                    status=ExecutionActionStatus.AVAILABLE,
-                    description=f"Get directions to {address}",
-                )
-            )
-
-        # 3. Call
-        if phone and phone.strip():
-            clean_digits = re.sub(r"[^\d+]", "", phone.strip())
-            actions.append(
-                ExecutionAction(
-                    id=f"act-call-{item.id}",
-                    item_id=item.id,
-                    action_type=ExecutionActionType.CALL,
-                    label="Call",
-                    target_url=f"tel:{clean_digits}",
-                    is_available=True,
-                    status=ExecutionActionStatus.AVAILABLE,
-                    description=f"Call {phone.strip()}",
-                )
-            )
-
-        # 4. Reservation (only if verified reservation URL exists)
-        if reservation_url and self._is_valid_web_url(reservation_url):
-            actions.append(
-                ExecutionAction(
-                    id=f"act-reserve-{item.id}",
-                    item_id=item.id,
-                    action_type=ExecutionActionType.RESERVE,
-                    label="Reserve",
-                    target_url=reservation_url,
-                    is_available=True,
-                    status=ExecutionActionStatus.AVAILABLE,
-                    description=f"Open official booking page for {item.name}",
+                    description=spec.description,
                 )
             )
 
@@ -362,6 +342,26 @@ class PlanExecutionService:
         )
 
         return actions
+
+    def _derive_item_hint(
+        self,
+        item: PlanItem,
+        matched: Place | Activity | None,
+    ) -> str | None:
+        """Derive truthful contact hint when venue publishes no direct booking path."""
+        source_url = matched.source_url if matched else None
+        address = (matched.address if matched and matched.address else None) or item.location
+        phone = matched.phone if matched else None
+        reservation_url = matched.reservation_url if matched else None
+
+        specs = derive_venue_action_specs(
+            name=item.name,
+            location=address,
+            source_url=source_url,
+            phone=phone,
+            reservation_url=reservation_url,
+        )
+        return contact_fallback_label(specs)
 
     def _match_item_to_option(
         self,
@@ -407,10 +407,7 @@ class PlanExecutionService:
             return []
 
     def _is_valid_web_url(self, url: str) -> bool:
-        if not url or not isinstance(url, str):
-            return False
-        stripped = url.strip()
-        return stripped.startswith("https://") or stripped.startswith("http://")
+        return is_valid_web_url(url)
 
     def _validate_url_security(self, url: str) -> str | None:
         """Validate protocol whitelist and prevent injection."""

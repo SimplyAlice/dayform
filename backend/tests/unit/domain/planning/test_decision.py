@@ -284,7 +284,7 @@ def test_evaluate_place_neighborhood_matching() -> None:
     assert candidate.is_eligible is True
     loc_reason = next(r for r in candidate.reasons if r.type is ReasonType.LOCATION)
     assert loc_reason.outcome is ReasonOutcome.SUPPORTED
-    assert "matches Waterfront" in loc_reason.message
+    assert "Waterfront" in loc_reason.message
     assert candidate.address == "10 Dock Rd, V&A Waterfront, Cape Town"
 
 
@@ -377,3 +377,33 @@ def test_evaluate_activity_duration_limit_fits() -> None:
     dur_reason = next(r for r in candidate.reasons if r.type is ReasonType.DURATION)
     assert dur_reason.outcome is ReasonOutcome.SUPPORTED
     assert "fits the 180-minute time limit" in dur_reason.message
+
+
+def test_evaluate_place_generic_category_does_not_satisfy_specific_experience_requirement() -> None:
+    # A generic modern gallery has category CULTURE, but does NOT evidence historic streets
+    generic_gallery = _place(
+        name="Modern Avant-Garde Space",
+        category=InformationCategory.CULTURE,
+        description="Contemporary digital media and experimental abstract exhibits.",
+    )
+    criteria = DecisionCriteria(experience_requirements=("historic_streets",))
+    candidate = evaluate_place(generic_gallery, criteria)
+
+    req_reasons = [r for r in candidate.reasons if r.type is ReasonType.REQUIREMENT]
+    assert len(req_reasons) == 0  # Generic category must not claim historic streets experience
+
+
+def test_evaluate_place_evidence_matches_specific_experience_requirement() -> None:
+    # A historic venue with evidence terms matches the experience requirement
+    historic_fort = _place(
+        name="Castle of Good Hope",
+        category=InformationCategory.CULTURE,
+        description="Historic 17th-century fortress featuring colonial architecture and heritage collections.",
+    )
+    criteria = DecisionCriteria(experience_requirements=("historic_streets",))
+    candidate = evaluate_place(historic_fort, criteria)
+
+    req_reasons = [r for r in candidate.reasons if r.type is ReasonType.REQUIREMENT]
+    assert len(req_reasons) == 1
+    assert "historic streets" in req_reasons[0].message
+

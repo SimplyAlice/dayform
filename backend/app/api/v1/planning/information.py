@@ -111,9 +111,15 @@ class DecisionCandidateRead(BaseModel):
     source: str
     address: str | None = None
     opening_hours: str | None = None
+    phone: str | None = None
+    source_url: str | None = None
+    reservation_url: str | None = None
     freshness: str | None = None
     verified_at: str | None = None
     attribution: str | None = None
+    # The provider's own description, so the UI and coverage can show *why* a
+    # venue was matched to what the user asked for.
+    description: str | None = None
 
     @classmethod
     def from_candidate(cls, candidate: DecisionCandidate) -> DecisionCandidateRead:
@@ -131,10 +137,14 @@ class DecisionCandidateRead(BaseModel):
             source=candidate.source,
             address=candidate.address,
             opening_hours=candidate.opening_hours,
-            freshness=candidate.freshness,
-            verified_at=candidate.verified_at,
-            attribution=candidate.attribution,
-        )
+            phone=candidate.phone,
+            source_url=candidate.source_url,
+            reservation_url=candidate.reservation_url,
+      freshness=candidate.freshness,
+        verified_at=candidate.verified_at,
+        attribution=candidate.attribution,
+        description=candidate.description,
+      )
 
 
 class RecommendationResponse(SearchResponse):

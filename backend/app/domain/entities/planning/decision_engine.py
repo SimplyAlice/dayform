@@ -11,6 +11,7 @@ import re
 from collections.abc import Mapping
 from decimal import Decimal
 
+from app.domain.entities.planning.areas import AreaStatus, classify_in_area, resolve_area_scope
 from app.domain.entities.planning.decision import (
     CandidateType,
     DecisionCandidate,
@@ -21,6 +22,12 @@ from app.domain.entities.planning.decision import (
     ReasonType,
 )
 from app.domain.entities.planning.information import Activity, InformationCategory, Place
+from app.domain.entities.planning.requirements import (
+    CandidateEvidence,
+    RequirementKind,
+    match_requirement,
+    requirement_by_slug,
+)
 from app.domain.entities.planning.temporal import parse_opening_hours
 
 # Transparent, additive weights. They tally preference fit, not confidence.
@@ -35,6 +42,7 @@ OCCASION_FIT_SCORE = 15
 ACTIVITY_TYPE_FIT_SCORE = 20
 TEMPORAL_FIT_SCORE = 20
 SEMANTIC_MATCH_SCORE = 15
+EXPERIENCE_MATCH_SCORE = 45
 
 
 def decide(
@@ -77,7 +85,15 @@ def decide(
 def evaluate_place(place: Place, criteria: DecisionCriteria) -> DecisionCandidate:
     reasons: list[DecisionReason] = []
     eligible = True
-    eligible &= _assess_location(place.location, criteria.location, reasons, address=place.address)
+    eligible &= _assess_location(
+        place.location,
+        criteria.location,
+        reasons,
+        address=place.address,
+        latitude=place.latitude,
+        longitude=place.longitude,
+        name=place.name,
+    )
     eligible &= _assess_category(place.category, criteria.category, reasons)
     eligible &= _assess_budget(place.price_from, criteria.maximum_cost, reasons)
     eligible &= _assess_group(
@@ -110,6 +126,12 @@ def evaluate_place(place: Place, criteria: DecisionCriteria) -> DecisionCandidat
     temporal_matched = any(
         r.type is ReasonType.OPENING_HOURS and r.outcome is ReasonOutcome.SUPPORTED for r in reasons
     )
+    area_matched = any(
+        r.type is ReasonType.LOCATION and r.outcome is ReasonOutcome.SUPPORTED for r in reasons
+    )
+    exp_matched = _assess_experience_requirements(
+        place.name, place.description, place.category, place.address, place.location, criteria.experience_requirements, reasons
+    )
     reasons = _ensure_reasons(reasons, "place")
     return DecisionCandidate(
         option_id=place.id,
@@ -126,6 +148,8 @@ def evaluate_place(place: Place, criteria: DecisionCriteria) -> DecisionCandidat
             occasion_matched=occasion_matched,
             temporal_matched=temporal_matched,
             desc_matched=desc_matched,
+            area_matched=area_matched,
+            exp_matched=exp_matched,
         ),
         reasons=tuple(reasons),
         category=place.category,
@@ -140,13 +164,25 @@ def evaluate_place(place: Place, criteria: DecisionCriteria) -> DecisionCandidat
         source_url=place.source_url,
         phone=place.phone,
         reservation_url=place.reservation_url,
+        description=place.description,
+        metadata=dict(place.metadata),
+        latitude=place.latitude,
+        longitude=place.longitude,
     )
 
 
 def evaluate_activity(activity: Activity, criteria: DecisionCriteria) -> DecisionCandidate:
     reasons: list[DecisionReason] = []
     eligible = True
-    eligible &= _assess_location(activity.location, criteria.location, reasons, address=activity.address)
+    eligible &= _assess_location(
+        activity.location,
+        criteria.location,
+        reasons,
+        address=activity.address,
+        latitude=activity.latitude,
+        longitude=activity.longitude,
+        name=activity.name,
+    )
     eligible &= _assess_category(activity.category, criteria.category, reasons)
     eligible &= _assess_budget(activity.cost, criteria.maximum_cost, reasons)
     eligible &= _assess_group(
@@ -185,6 +221,12 @@ def evaluate_activity(activity: Activity, criteria: DecisionCriteria) -> Decisio
     temporal_matched = any(
         r.type is ReasonType.OPENING_HOURS and r.outcome is ReasonOutcome.SUPPORTED for r in reasons
     )
+    area_matched = any(
+        r.type is ReasonType.LOCATION and r.outcome is ReasonOutcome.SUPPORTED for r in reasons
+    )
+    exp_matched = _assess_experience_requirements(
+        activity.name, activity.description, activity.category, activity.address, activity.location, criteria.experience_requirements, reasons
+    )
     reasons = _ensure_reasons(reasons, "activity")
     return DecisionCandidate(
         option_id=activity.id,
@@ -201,6 +243,8 @@ def evaluate_activity(activity: Activity, criteria: DecisionCriteria) -> Decisio
             occasion_matched=occasion_matched,
             temporal_matched=temporal_matched,
             desc_matched=desc_matched,
+            area_matched=area_matched,
+            exp_matched=exp_matched,
         ),
         reasons=tuple(reasons),
         category=activity.category,
@@ -214,6 +258,10 @@ def evaluate_activity(activity: Activity, criteria: DecisionCriteria) -> Decisio
         source_url=activity.source_url,
         phone=activity.phone,
         reservation_url=activity.reservation_url,
+        description=activity.description,
+        metadata=dict(activity.metadata),
+        latitude=activity.latitude,
+        longitude=activity.longitude,
     )
 
 
@@ -240,12 +288,40 @@ def _assess_location(
     requested: str | None,
     reasons: list[DecisionReason],
     address: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    name: str | None = None,
 ) -> bool:
+    """Whether a candidate can be used for the area the user asked for.
+
+    Every catalog venue carries the same city-level `location`, so a stated area
+    is decided from the venue's own address and coordinates. A venue that cannot
+    be shown to be in the requested area is not eligible for it: falling through
+    to the rest of the city is the silent broadening this replaces.
+    """
     if requested is None:
         return True
     req_clean = requested.strip().casefold()
     val_clean = (value or "").strip().casefold()
     addr_clean = (address or "").strip().casefold()
+
+    scope = resolve_area_scope(requested)
+    if scope is not None:
+        verdict = classify_in_area(
+            scope, address=address, location=value, latitude=latitude, longitude=longitude, name=name
+        )
+        if verdict.status is AreaStatus.MATCH:
+            reasons.append(
+                DecisionReason(ReasonType.LOCATION, ReasonOutcome.SUPPORTED, verdict.reason)
+            )
+            return True
+        outcome = (
+            ReasonOutcome.NEUTRAL
+            if verdict.status is AreaStatus.UNKNOWN
+            else ReasonOutcome.VIOLATED
+        )
+        reasons.append(DecisionReason(ReasonType.LOCATION, outcome, verdict.reason))
+        return False
 
     # 1. Exact match on city or location
     if val_clean and val_clean == req_clean:
@@ -404,6 +480,18 @@ def _assess_opening_hours(
         duration_minutes=duration_minutes,
     )
 
+    window_matched = False
+    if accommodate is False and criteria.end_time:
+        window_accommodate = sched.can_accommodate_window(
+            criteria.day_of_week,
+            criteria.start_time,
+            criteria.end_time,
+            duration_minutes=duration_minutes,
+        )
+        if window_accommodate is True:
+            accommodate = True
+            window_matched = True
+
     if accommodate is None:
         reasons.append(
             DecisionReason(
@@ -415,6 +503,8 @@ def _assess_opening_hours(
         return True
 
     time_ctx = f" around {criteria.start_time}" if criteria.start_time else ""
+    if window_matched:
+        time_ctx = f" during your {criteria.start_time}-{criteria.end_time} window"
     if criteria.day_of_week:
         day_val = criteria.day_of_week.value if hasattr(criteria.day_of_week, "value") else str(criteria.day_of_week)
         day_name = day_val.capitalize()
@@ -492,6 +582,42 @@ def _assess_duration(
     return False
 
 
+def _assess_experience_requirements(
+    name: str,
+    description: str,
+    category: InformationCategory,
+    address: str | None,
+    location: str | None,
+    experience_requirements: tuple[str, ...],
+    reasons: list[DecisionReason],
+) -> int:
+    if not experience_requirements:
+        return 0
+    matched = 0
+    evidence = CandidateEvidence(
+        name=name,
+        description=description,
+        category=category,
+        address=address or "",
+        location=location or "",
+    )
+    for slug in experience_requirements:
+        req = requirement_by_slug(slug)
+        if req is None:
+            continue
+        coverage = match_requirement(req, evidence, stop_name=name)
+        if coverage is not None:
+            reasons.append(
+                DecisionReason(
+                    ReasonType.REQUIREMENT,
+                    ReasonOutcome.SUPPORTED,
+                    f"Matches your request for {req.label.lower()}",
+                )
+            )
+            matched += 1
+    return matched
+
+
 def _score(
     criteria: DecisionCriteria,
     category: InformationCategory,
@@ -502,6 +628,8 @@ def _score(
     occasion_matched: bool = False,
     temporal_matched: bool = False,
     desc_matched: int = 0,
+    area_matched: bool = False,
+    exp_matched: int = 0,
 ) -> int:
     score = 0
     if criteria.category is not None and category is criteria.category:
@@ -512,11 +640,10 @@ def _score(
         score += BUDGET_FIT_SCORE
     if criteria.group_size is not None:
         score += GROUP_FIT_SCORE
-    if (
-        criteria.location is not None
-        and location is not None
-        and location.casefold() == criteria.location.strip().casefold()
-    ):
+    # Prefer a candidate that was actually shown to be in the area the user
+    # asked for. Outside the area it is ineligible, so this only separates
+    # candidates that are inside.
+    if area_matched:
         score += LOCATION_MATCH_SCORE
     if criteria.maximum_duration_minutes is not None:
         if duration_minutes is None:
@@ -536,6 +663,8 @@ def _score(
         score += TEMPORAL_FIT_SCORE
     if desc_matched > 0:
         score += desc_matched * SEMANTIC_MATCH_SCORE
+    if exp_matched > 0:
+        score += exp_matched * EXPERIENCE_MATCH_SCORE
     return score
 
 
@@ -692,7 +821,7 @@ def _assess_preferences(
                 )
                 matched = True
         elif pref in {"romantic", "date"}:
-            if any(term in desc_lower for term in ("shared", "tasting", "waterfront", "walk", "cultural", "relaxed")):
+            if any(term in desc_lower for term in ("romantic", "candlelit", "courtyard dinner", "date night", "intimate dinner")):
                 reasons.append(
                     DecisionReason(
                         ReasonType.PREFERENCE,
@@ -701,15 +830,26 @@ def _assess_preferences(
                     )
                 )
                 matched = True
-        elif pref in {"fun", "something fun", "entertainment", "social"}:
-            reasons.append(
-                DecisionReason(
-                    ReasonType.PREFERENCE,
-                    ReasonOutcome.SUPPORTED,
-                    "Matches your preference for something fun and engaging",
+        elif pref in {"cozy", "cosy", "intimate"}:
+            if any(term in desc_lower for term in ("cozy", "cosy", "cafe", "café", "courtyard", "terrace", "intimate", "roastery", "indoor seating")):
+                reasons.append(
+                    DecisionReason(
+                        ReasonType.PREFERENCE,
+                        ReasonOutcome.SUPPORTED,
+                        "Matches your preference for a cozy atmosphere",
+                    )
                 )
-            )
-            matched = True
+                matched = True
+        elif pref in {"fun", "something fun", "entertainment", "social"}:
+            if any(term in desc_lower for term in ("entertainment", "game", "interactive", "comedy", "show", "performance", "adventure", "activity", "quirky", "fun", "amusement")):
+                reasons.append(
+                    DecisionReason(
+                        ReasonType.PREFERENCE,
+                        ReasonOutcome.SUPPORTED,
+                        "Matches your preference for something fun and engaging",
+                    )
+                )
+                matched = True
         elif pref in {"food", "food-focused", "food_focused"}:
             if category is InformationCategory.FOOD:
                 reasons.append(
@@ -901,11 +1041,37 @@ def _generate_trade_off_summary(
             "Rain is expected during your requested window, so sheltered and indoor options were prioritised to keep you dry."
         )
 
+    # 2b. Experience requirement verification
+    if criteria.experience_requirements:
+        unverified_exp: list[str] = []
+        for slug in criteria.experience_requirements:
+            req = requirement_by_slug(slug)
+            if req is None or req.kind is not RequirementKind.EXPERIENCE:
+                continue
+            supported = any(
+                any(
+                    r.type is ReasonType.REQUIREMENT
+                    and r.outcome is ReasonOutcome.SUPPORTED
+                    and req.label.lower() in r.message.lower()
+                    for r in c.reasons
+                )
+                for c in top_candidates
+            )
+            if not supported:
+                unverified_exp.append(req.label.lower())
+        if unverified_exp:
+            exp_str = ", ".join(unverified_exp)
+            notes.append(
+                f"Public registry listings do not currently verify {exp_str}; recommendations were prioritized for quality and atmosphere."
+            )
+
     # 3. Soft preference relaxation (e.g. "quiet", "pretty")
     if criteria.semantic_descriptors:
         unverified: list[str] = []
         for desc in criteria.semantic_descriptors:
             if upscale_budget_conflict and desc.casefold() in {"fancy", "fine dining", "upscale", "luxury"}:
+                continue
+            if desc.casefold() in {"reading", "read", "study"}:
                 continue
             supported = any(
                 any(

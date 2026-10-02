@@ -16,7 +16,10 @@ from app.domain.entities.mobility.models import (
     ProviderCapability,
 )
 from app.domain.ports.mobility.ports import MobilityProviderPort
-from app.infrastructure.mobility.geo import estimate_network_distance_km
+from app.infrastructure.mobility.geo import (
+    estimate_network_distance_km,
+    is_in_cape_town_service_area,
+)
 
 
 class BoltProvider(MobilityProviderPort):
@@ -42,6 +45,13 @@ class BoltProvider(MobilityProviderPort):
         )
 
     async def get_options(self, requirement: MobilityRequirement) -> list[MobilityOption]:
+        # Bolt does not cover the whole country; declining outside the operating
+        # area keeps it from becoming the default answer on legs it cannot serve.
+        if not is_in_cape_town_service_area(
+            requirement.origin
+        ) or not is_in_cape_town_service_area(requirement.destination):
+            return []
+
         distance_km = estimate_network_distance_km(
             requirement.origin,
             requirement.destination,

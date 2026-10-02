@@ -40,6 +40,7 @@ class PlanningUnderstanding:
     duration_limit_minutes: int | None = None
     location: str | None = None
     location_is_inferred: bool = False
+    origin: str | None = None
     transport_mode: str | None = None
     budget_amount: Decimal | None = None
     budget_kind: BudgetKind = BudgetKind.NONE
@@ -49,6 +50,9 @@ class PlanningUnderstanding:
     exclusions: tuple[str, ...] = field(default_factory=tuple)
     activity_types: tuple[InformationCategory, ...] = field(default_factory=tuple)
     semantic_descriptors: tuple[str, ...] = field(default_factory=tuple)
+    # The distinct things the user asked for, kept separate from broad
+    # categories so the final plan can show what it actually covered.
+    experience_requirements: tuple[str, ...] = field(default_factory=tuple)
     setting_preference: str | None = None
     weather_context: str | None = None
     ambiguities: tuple[str, ...] = field(default_factory=tuple)

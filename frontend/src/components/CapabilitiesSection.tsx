@@ -66,10 +66,10 @@ export const CapabilitiesSection: React.FC<CapabilitiesSectionProps> = ({ onStar
         <div className="capabilities-header">
           <div className="section-eyebrow">
             <IconShield size={14} className="eyebrow-icon" />
-            <span>ENGINE ARCHITECTURE</span>
+            <span>PLANNING INTELLIGENCE</span>
           </div>
           <h2 className="capabilities-heading">
-            Built for how decisions
+            Built for how days
             <br />
             <span className="serif-italic-accent">actually happen.</span>
           </h2>

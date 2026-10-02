@@ -91,6 +91,7 @@ class MobilityOption:
     duration_minutes: int | None = None
     cost: Decimal | None = None
     cost_is_unknown: bool = False
+    cost_is_estimated: bool = False
     currency: str = "ZAR"
     walking_duration_minutes: int | None = None
     transfers: int = 0
@@ -121,6 +122,8 @@ class MobilityOption:
             raise ValueError("Cost cannot be negative.")
         if self.cost is None:
             self.cost_is_unknown = True
+            # An unknown fare can never also be an estimate.
+            self.cost_is_estimated = False
         if self.transfers < 0:
             raise ValueError("Transfers cannot be negative.")
         if not (0.0 <= self.confidence <= 1.0):

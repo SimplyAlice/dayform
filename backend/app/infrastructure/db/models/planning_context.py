@@ -52,6 +52,11 @@ class PlanningContextModel(UUIDPrimaryKeyMixin, Base):
         nullable=True,
     )
 
+    origin: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     plan: Mapped[PlanModel] = relationship(
         back_populates="context",
         lazy="selectin",

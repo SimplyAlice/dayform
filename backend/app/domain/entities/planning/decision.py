@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
+from typing import Mapping
 from uuid import UUID
 
 from app.domain.entities.planning.information import InformationCategory
@@ -31,6 +32,7 @@ class ReasonType(str, Enum):
     WEATHER = "weather"
     TRADE_OFF = "trade_off"
     MOBILITY = "mobility"
+    REQUIREMENT = "requirement"
 
 
 class ReasonOutcome(str, Enum):
@@ -76,6 +78,14 @@ class DecisionCandidate:
     source_url: str | None = None
     phone: str | None = None
     reservation_url: str | None = None
+    # Provider-supplied evidence. Retained so intent coverage can be checked
+    # against what the venue actually says about itself, not just its category.
+    description: str = ""
+    metadata: Mapping[str, str] = field(default_factory=dict)
+    # Carried so a requested area can be checked against where the venue
+    # physically is, rather than against the city every catalog venue shares.
+    latitude: float | None = None
+    longitude: float | None = None
 
     def __post_init__(self) -> None:
         if not self.name.strip():
@@ -120,6 +130,7 @@ class DecisionCriteria:
     preferences: tuple[str, ...] = ()
     exclusions: tuple[str, ...] = ()
     activity_types: tuple[InformationCategory, ...] = ()
+    experience_requirements: tuple[str, ...] = ()
     semantic_descriptors: tuple[str, ...] = ()
     setting_preference: str | None = None
     weather_context: str | None = None

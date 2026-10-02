@@ -68,6 +68,32 @@ class MobilityPlanningService:
             return []
 
         transitions: list[PlanTransition] = []
+        for transition in await self.evaluate_aligned_legs(
+            points, party_size=party_size, preferred_modes=preferred_modes
+        ):
+            if transition is not None:
+                transitions.append(transition)
+        return transitions
+
+    async def evaluate_aligned_legs(
+        self,
+        stops: Sequence[StopSequencePoint],
+        party_size: int = 1,
+        preferred_modes: list[TransportMode] | None = None,
+    ) -> list[PlanTransition | None]:
+        """Evaluate consecutive legs, preserving one slot per adjacent pair.
+
+        `evaluate_stop_sequence` drops legs that need no travel, which shifts the
+        remaining results. Scheduling code cannot use that shape, because it has
+        to know which leg belongs to which pair of stops. This variant keeps a
+        `None` in the slot for a pair that needs no travel, so index `i` always
+        describes the move from point `i` to point `i + 1`.
+        """
+        points = [s for s in stops if s.location and s.location.strip()]
+        if len(points) < 2:
+            return []
+
+        legs: list[PlanTransition | None] = []
         for a, b in zip(points, points[1:], strict=False):
             transition = await self._build_transition(
                 origin=a.location.strip(),
@@ -81,8 +107,8 @@ class MobilityPlanningService:
             )
             if transition is not None:
                 await self._apply_live_status(transition, a.location.strip(), b.location.strip())
-                transitions.append(transition)
-        return transitions
+            legs.append(transition)
+        return legs
 
     async def _build_transition(
         self,
@@ -142,7 +168,7 @@ class MobilityPlanningService:
                 is_feasible=True,
             )
 
-        primary = self._select_primary_option(options, preferred_modes)
+        primary, substitution_reason = self._select_primary_option(options, preferred_modes)
 
         is_feasible = True
         feasibility_issue = None
@@ -175,6 +201,7 @@ class MobilityPlanningService:
             provider_name=primary.provider_name,
             cost=primary.cost,
             cost_known=not primary.cost_is_unknown,
+            cost_is_estimated=primary.cost_is_estimated,
             currency=primary.currency,
             transfers=primary.transfers,
             confidence=primary.confidence,
@@ -186,6 +213,7 @@ class MobilityPlanningService:
             available_options=tuple(options),
             is_feasible=is_feasible,
             feasibility_issue=feasibility_issue,
+            mode_substitution_reason=substitution_reason,
         )
 
     async def _apply_live_status(
@@ -418,8 +446,15 @@ class MobilityPlanningService:
         self,
         options: list[MobilityOption],
         preferred_modes: list[TransportMode] | None = None,
-    ) -> MobilityOption:
-        """Select the most appropriate primary option to anchor the transition."""
+    ) -> tuple[MobilityOption, str | None]:
+        """Select the option to anchor the transition, plus any substitution reason.
+
+        Returns the chosen option and, when an explicitly requested mode could not
+        be honoured, a sentence explaining what was used instead. Returning the
+        reason rather than applying the change quietly is the whole point: an
+        unrequested ride-hail substitution is indistinguishable from the planner
+        having ignored the user.
+        """
         if not options:
             raise ValueError("Cannot select from empty options list.")
 
@@ -428,7 +463,9 @@ class MobilityPlanningService:
             for mode in preferred_modes:
                 for opt in options:
                     if opt.mode == mode:
-                        return opt
+                        return opt, None
+
+        reason = self._unmet_preference_reason(options, preferred_modes)
 
         # Otherwise: walking if <= 15 minutes
         walk_opt = next(
@@ -442,7 +479,7 @@ class MobilityPlanningService:
             None,
         )
         if walk_opt:
-            return walk_opt
+            return walk_opt, reason
 
         # Public transit if direct & verified
         bus_opt = next(
@@ -454,7 +491,35 @@ class MobilityPlanningService:
             None,
         )
         if bus_opt:
-            return bus_opt
+            return bus_opt, reason
 
-        # Fallback to the first option
-        return options[0]
+        # Fallback to the first option, but never let provider registration order
+        # decide. When the user asked for something specific and only ride-hail is
+        # left, the cheapest available option is the honest pick — and the reason
+        # it was substituted is carried through to the plan.
+        fallback = min(
+            options,
+            key=lambda opt: (
+                opt.duration_minutes if opt.duration_minutes is not None else 9999,
+                opt.cost if opt.cost is not None else 9999,
+            ),
+        )
+        return fallback, reason
+
+    def _unmet_preference_reason(
+        self,
+        options: list[MobilityOption],
+        preferred_modes: list[TransportMode] | None,
+    ) -> str | None:
+        """Explain a substitution, or None when nothing was requested."""
+        if not preferred_modes:
+            return None
+        requested = ", ".join(sorted({m.value.replace("_", " ") for m in preferred_modes}))
+        available = ", ".join(
+            sorted({f"{o.provider_name} ({o.mode.value.replace('_', ' ')})" for o in options})
+        )
+        return (
+            f"No {requested} service is available for this leg, so "
+            f"{'it was' if len(preferred_modes) == 1 else 'they were'} substituted "
+            f"with: {available}."
+        )

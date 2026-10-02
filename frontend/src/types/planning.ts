@@ -44,6 +44,9 @@ export type ReasonType =
   | 'exclusion'
   | 'setting'
   | 'mobility'
+  | 'requirement'
+  | 'weather'
+  | 'trade_off'
   | 'general';
 
 export type ReasonOutcome = 'supported' | 'neutral' | 'violated';
@@ -68,9 +71,17 @@ export interface DecisionCandidateRead {
   source: string;
   address?: string | null;
   opening_hours?: string | null;
+  /** Verified business contact and booking data, absent when unknown. */
+  phone?: string | null;
+  source_url?: string | null;
+  reservation_url?: string | null;
   freshness?: 'live' | 'recently_verified' | 'cached' | 'fixture' | string | null;
   verified_at?: string | null;
   attribution?: string | null;
+  /** The provider's own description of the venue. */
+  description?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
 }
 
 export interface RecommendationResponse {
@@ -88,6 +99,7 @@ export interface ContextRead {
   end_time: string | null;
   group_size: number;
   transport_mode: string | null;
+  origin?: string | null;
 }
 
 export interface ConstraintRead {
@@ -131,6 +143,8 @@ export interface UnderstandingRead {
   duration_limit_minutes?: number | null;
   location: string | null;
   location_is_inferred: boolean;
+  /** Where the day starts, only when the user actually stated it. */
+  origin?: string | null;
   transport_mode?: string | null;
   budget_amount: string | number | null;
   budget_kind: 'hard_max' | 'approximate' | 'preference' | 'none';
@@ -141,6 +155,10 @@ export interface UnderstandingRead {
   setting_preference?: string | null;
   weather_context?: string | null;
   ambiguities: string[];
+  /** The distinct experiences the user asked for, as domain slugs. */
+  experience_requirements: string[];
+  /** The same requirements in the user's language, index-aligned with the above. */
+  experience_requirement_labels: string[];
   provenance: Record<string, string>;
 }
 
@@ -174,6 +192,8 @@ export interface PlanTransitionRead {
   provider_name: string;
   cost?: string | number | null;
   cost_known: boolean;
+  /** The fare came from a static table rather than a live quote. */
+  cost_is_estimated?: boolean;
   currency: string;
   transfers: number;
   confidence: number;
@@ -224,6 +244,9 @@ export interface PlanRead {
 
 export interface CreatePlanFromIntentRequest {
   request: string;
+  origin?: string;
+  start_time?: string;
+  transport_preference?: string;
 }
 
 export interface PlanModifyRequest {
@@ -302,11 +325,25 @@ export interface ExecutionActionRead {
   description?: string | null;
 }
 
+/**
+ * A venue action available before the plan is saved, so a proposed stop can be
+ * acted on without waiting for confirmation.
+ */
+export interface VenueActionRead {
+  action_type: ExecutionActionType;
+  label: string;
+  target_url: string;
+  description?: string | null;
+}
+
 export interface PlanItemActionsRead {
   item_id: string;
   item_name: string;
   item_status: string;
   actions: ExecutionActionRead[];
+  opening_hours?: string | null;
+  address?: string | null;
+  contact_hint?: string | null;
 }
 
 export interface PlanActionsRead {
@@ -347,4 +384,142 @@ export interface PlanHealthCheckRead {
   checked_at: string;
   recommended_adaptation_prompt?: string | null;
   proposed_adaptation?: PlanAdaptationRead | null;
+}
+
+/* --- Transport-aware orchestration --------------------------------------- */
+
+/** One transport option considered for a leg, whether chosen or alternative. */
+export interface MobilityOptionRead {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  mode: string;
+  departure_time?: string | null;
+  arrival_time?: string | null;
+  duration_minutes?: number | null;
+  cost?: string | number | null;
+  cost_is_unknown: boolean;
+  cost_is_estimated: boolean;
+  currency: string;
+  transfers: number;
+  confidence: number;
+  booking_url?: string | null;
+  summary?: string | null;
+  action_label?: string | null;
+  schedule_note?: string | null;
+  route_or_line?: string | null;
+  live_status?: string;
+}
+
+/** A stop in a fully reasoned plan, already scheduled around its travel. */
+export interface OrchestratedStopRead {
+  name: string;
+  location: string;
+  address?: string | null;
+  opening_hours?: string | null;
+  phone?: string | null;
+  source_url?: string | null;
+  reservation_url?: string | null;
+  category?: string | null;
+  estimated_cost?: string | number | null;
+  duration_minutes: number;
+  start_time: string;
+  end_time: string;
+  actions: VenueActionRead[];
+  /** How to reach a venue that publishes no reservation URL. */
+  contact_hint?: string | null;
+  /** The venue's own description, the evidence coverage is checked against. */
+  description?: string | null;
+}
+
+export interface OrchestratedLegRead {
+  from_label: string;
+  to_label: string;
+  transition: PlanTransitionRead;
+  selected_option_id?: string | null;
+  alternatives: MobilityOptionRead[];
+  all_options?: MobilityOptionRead[];
+  reason?: string | null;
+  /** Null when no transport preference was stated. */
+  preference_honoured?: boolean | null;
+  preference_note?: string | null;
+}
+
+/**
+ * A complete plan presented before confirmation. Transport has already been
+ * evaluated and folded into `stops[].start_time`.
+ */
+export interface OrchestratedPlanRead {
+  plan_id: string;
+  origin?: string | null;
+  /** False when no origin was stated; the plan never invents one. */
+  origin_resolved: boolean;
+  stops: OrchestratedStopRead[];
+  legs: OrchestratedLegRead[];
+    feasibility: ItineraryFeasibilityRead;
+    day_start?: string | null;
+    day_end?: string | null;
+    /** Human-readable form of the user's transport preference, when one was applied. */
+    transport_preference?: string | null;
+  /** False when no transport preference was stated. */
+  transport_preference_honoured?: boolean | null;
+  transport_preference_note?: string | null;
+  /** False when a hard constraint or stated requirement could not be met. */
+  is_valid?: boolean;
+  coverage?: IntentCoverageRead | null;
+  conflicts?: PlanningConflictRead[];
+  removed_stops?: RemovedStopRead[];
+}
+
+export interface RequirementCoverageRead {
+  slug: string;
+  label: string;
+  kind: 'experience' | 'vibe' | 'preference';
+  is_covered: boolean;
+  status: string;
+  supported_by?: string[];
+  evidence_terms?: string[];
+}
+
+export interface IntentCoverageRead {
+  status: string;
+  items: RequirementCoverageRead[];
+  covered_count: number;
+  total_count: number;
+}
+
+export interface PlanningConflictRead {
+  kind: string;
+  message: string;
+  requirement_slug?: string | null;
+  requirement_label?: string | null;
+}
+
+export interface RemovedStopRead {
+  name: string;
+  reason: string;
+}
+
+export interface OrchestrateStopInput {
+  name: string;
+  location: string;
+  option_id?: string;
+  duration_minutes?: number | null;
+  estimated_cost?: string | number | null;
+  address?: string | null;
+  opening_hours?: string | null;
+  phone?: string | null;
+  source_url?: string | null;
+  reservation_url?: string | null;
+  category?: string | null;
+  description?: string | null;
+}
+
+export interface OrchestrateRequest {
+  stops: OrchestrateStopInput[];
+  origin?: string | null;
+  preferred_modes?: string[] | null;
+  party_size?: number | null;
+  preferred_provider?: string | null;
+  selected_leg_options?: Record<number, string> | null;
 }

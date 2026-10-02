@@ -1,0 +1,350 @@
+/* ==========================================================================
+   DAYFORM M18 — the product's visual language
+   ==========================================================================
+
+   One system across search, understanding, plan, journey, transport, live
+   intelligence, adaptation and execution. This file layers onto styles.css
+   rather than replacing it: existing components keep their class names, and
+   what follows refines them into one coherent surface.
+
+   The organising idea is the "Dayform Light" — a slow warm gradient that
+   drifts behind whatever the product is currently thinking about. It is the
+   one motif that ties the experience together, and it is deliberately quiet:
+   low opacity, slow, and never in front of the words.
+   ========================================================================== */
+
+:root {
+  /* M18 spacing scale. 4px base, used everywhere new. */
+  --df-space-1: 4px;
+  --df-space-2: 8px;
+  --df-space-3: 12px;
+  --df-space-4: 16px;
+  --df-space-5: 24px;
+  --df-space-6: 32px;
+  --df-space-7: 48px;
+  --df-space-8: 64px;
+
+  /* Type scale for the new surfaces. */
+  --df-text-micro: 11px;
+  --df-text-meta: 13px;
+  --df-text-body: 15px;
+  --df-text-lead: 18px;
+  --df-text-title: 26px;
+  --df-display: clamp(34px, 5.2vw, 62px);
+
+  /* Coverage state colours. Kept beside the existing semantic tokens so the
+     ledger, the journey and the save gate all read as one system. */
+  --df-state-ok: #18794e;
+  --df-state-ok-soft: #ebfbee;
+  --df-state-partial: #b45309;
+  --df-state-partial-soft: #fffbeb;
+  --df-state-miss: #b42318;
+  --df-state-miss-soft: #fef3f2;
+  --df-state-trade: #6b4bb8;
+  --df-state-trade-soft: #f4f0ff;
+
+  /* The Dayform Light. Warm, editorial, alive. */
+  --df-light-a: #ff4d36;
+  --df-light-b: #ffb03a;
+  --df-light-c: #ffe773;
+  --df-light-d: #b06be8;
+  --df-light-angle: 0deg;
+
+  /* Motion. One set of durations so nothing drifts out of step. */
+  --df-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --df-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --df-fast: 160ms;
+  --df-mid: 280ms;
+  --df-slow: 520ms;
+  --df-drift: 26s;
+}
+
+/* ==========================================================================
+   THE DAYFORM LIGHT
+   ========================================================================== */
+
+@keyframes df-light-drift {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+  }
+  100% {
+    transform: rotate(360deg) scale(1);
+  }
+}
+
+@keyframes df-light-drift-reverse {
+  0% {
+    transform: rotate(360deg) scale(1.06);
+  }
+  50% {
+    transform: rotate(180deg) scale(1);
+  }
+  100% {
+    transform: rotate(0deg) scale(1.06);
+  }
+}
+
+@keyframes df-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+@keyframes df-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes df-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes df-reveal-line {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* The signature. A warm, slow, organic light. Applied as a background layer
+   behind a surface, or as a halo around one. Never animated on a per-frame
+   basis and never given layout-affecting properties, so it stays cheap. */
+.df-light {
+  position: relative;
+  isolation: isolate;
+}
+
+.df-light::before {
+  content: '';
+  position: absolute;
+  inset: -18%;
+  transform: scale(var(--df-light-scale, 1));
+  transform-origin: center;
+  z-index: -1;
+  border-radius: inherit;
+  background: conic-gradient(
+    from var(--df-light-angle),
+    var(--df-light-a),
+    var(--df-light-b),
+    var(--df-light-c),
+    var(--df-light-d),
+    var(--df-light-a)
+  );
+  filter: blur(46px);
+  opacity: 0.3;
+  animation: df-light-drift var(--df-drift) linear infinite;
+  pointer-events: none;
+}
+
+.df-light--soft::before {
+  inset: -10%;
+  opacity: 0.18;
+  filter: blur(60px);
+}
+
+.df-light--strong::before {
+  opacity: 0.46;
+  filter: blur(38px);
+}
+
+.df-light--reverse::before {
+  animation: df-light-drift-reverse calc(var(--df-drift) * 1.4) linear infinite;
+}
+
+.df-light--paused::before {
+  animation-play-state: paused;
+}
+
+/* A static, non-animated variant for surfaces where motion would be noise
+   (dense itinerary rows, summary bars). */
+.df-light--still::before {
+  animation: none;
+  opacity: 0.2;
+}
+
+/* ==========================================================================
+   AMBIENT LAYER
+   ==========================================================================
+
+   A handful of glyphs drifting behind the page, chosen from what the user
+   actually asked for. Low opacity, varied depth, slow. They are atmosphere,
+   not content: `aria-hidden`, never interactive, and switched off entirely
+   for reduced motion and small screens.
+   ========================================================================== */
+
+.df-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+
+.df-ambient-glyph {
+  position: absolute;
+  line-height: 1;
+  user-select: none;
+  will-change: transform;
+  animation-name: df-float-a, df-float-b, df-float-c;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+@keyframes df-float-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  33% {
+    transform: translate3d(14px, -26px, 0) rotate(7deg);
+  }
+  66% {
+    transform: translate3d(-10px, -12px, 0) rotate(-5deg);
+  }
+}
+
+@keyframes df-float-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(0deg);
+  }
+  40% {
+    transform: translate3d(-18px, 18px, 0) rotate(-8deg);
+  }
+  70% {
+    transform: translate3d(12px, 30px, 0) rotate(6deg);
+  }
+}
+
+@keyframes df-float-c {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(8px, -20px, 0) scale(1.08);
+  }
+}
+
+.df-ambient-glyph[data-depth='far'] {
+  font-size: 20px;
+  opacity: 0.1;
+}
+.df-ambient-glyph[data-depth='mid'] {
+  font-size: 30px;
+  opacity: 0.14;
+}
+.df-ambient-glyph[data-depth='near'] {
+  font-size: 44px;
+  opacity: 0.09;
+}
+
+/* The ambient world must never sit in front of the day. */
+.product-main,
+.product-nav {
+  position: relative;
+  z-index: 1;
+}
+
+/* ==========================================================================
+   MOTION SYSTEM
+   ========================================================================== */
+
+.df-enter {
+  animation: df-rise var(--df-slow) var(--df-ease) both;
+}
+
+.df-enter-1 { animation-delay: 60ms; }
+.df-enter-2 { animation-delay: 120ms; }
+.df-enter-3 { animation-delay: 180ms; }
+.df-enter-4 { animation-delay: 240ms; }
+.df-enter-5 { animation-delay: 300ms; }
+
+.df-stagger > * {
+  animation: df-rise 460ms var(--df-ease) both;
+}
+.df-stagger > *:nth-child(1) { animation-delay: 40ms; }
+.df-stagger > *:nth-child(2) { animation-delay: 100ms; }
+.df-stagger > *:nth-child(3) { animation-delay: 160ms; }
+.df-stagger > *:nth-child(4) { animation-delay: 220ms; }
+.df-stagger > *:nth-child(5) { animation-delay: 280ms; }
+.df-stagger > *:nth-child(6) { animation-delay: 340ms; }
+
+/* ==========================================================================
+   SHARED SURFACE TREATMENT
+   ========================================================================== */
+
+.df-surface {
+  position: relative;
+  background: var(--color-cream-card);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.df-kicker {
+  font-family: var(--font-sans);
+  font-size: var(--df-text-micro);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-tertiary);
+}
+
+.df-serif {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+}
+
+/* The halo is sized relative to its surface, so on a narrow screen it
+   reaches a long way past the edge for no visual gain. Pull it in to match the
+   breathing room the phone layout actually has. */
+@media (max-width: 640px) {
+  .df-light::before {
+    inset: -8%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .df-light::before,
+  .df-ambient {
+    animation: none !important;
+    display: none;
+  }
+  .df-enter,
+  .df-stagger > * {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

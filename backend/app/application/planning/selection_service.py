@@ -95,6 +95,7 @@ def criteria_from_plan(plan: Plan) -> DecisionCriteria:
         occasion=_occasion_from_constraints(plan.constraints),
         preferences=_preferences_from_constraints(plan.constraints),
         exclusions=_exclusions_from_constraints(plan.constraints),
+        experience_requirements=_experience_requirements_from_constraints(plan.constraints),
         semantic_descriptors=_semantic_descriptors_from_constraints(plan.constraints),
         setting_preference=_setting_preference_from_constraints(plan.constraints),
         weather_context=_weather_context_from_constraints(plan.constraints),
@@ -196,6 +197,14 @@ def _exclusions_from_constraints(constraints: list[Constraint]) -> tuple[str, ..
         if constraint.type is ConstraintType.REQUIREMENT and constraint.value.startswith("exclude:"):
             exclusions.append(constraint.value.split(":", 1)[1])
     return tuple(exclusions)
+
+
+def _experience_requirements_from_constraints(constraints: list[Constraint]) -> tuple[str, ...]:
+    reqs: list[str] = []
+    for constraint in constraints:
+        if constraint.type is ConstraintType.REQUIREMENT and constraint.value.startswith("requirement:"):
+            reqs.append(constraint.value.split(":", 1)[1])
+    return tuple(reqs)
 
 
 def _semantic_descriptors_from_constraints(constraints: list[Constraint]) -> tuple[str, ...]:

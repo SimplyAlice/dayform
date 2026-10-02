@@ -32,6 +32,7 @@ class PlanTransition:
     provider_name: str = "Walking"
     cost: Decimal | None = None
     cost_known: bool = False
+    cost_is_estimated: bool = False
     currency: str = "ZAR"
     transfers: int = 0
     confidence: float = 0.5
@@ -43,6 +44,11 @@ class PlanTransition:
     available_options: tuple[MobilityOption, ...] = field(default_factory=tuple)
     is_feasible: bool = True
     feasibility_issue: str | None = None
+    # Set when an explicitly requested transport mode could not be honoured and a
+    # different mode was used instead. A substitution the user did not ask for and
+    # cannot see is indistinguishable from the planner ignoring them, so it is
+    # always reported rather than applied silently.
+    mode_substitution_reason: str | None = None
     # M16 live mobility. Defaults describe a plan with no live information at all,
     # which is the honest starting point for every provider without a public feed.
     live_availability: MobilityLiveAvailability = MobilityLiveAvailability.UNAVAILABLE
@@ -62,6 +68,33 @@ class PlanTransition:
         if self.cost is not None and self.cost < 0:
             raise ValueError("Transition cost cannot be negative.")
         self.cost_known = self.cost is not None
+
+    def apply_selected_option(self, option: MobilityOption) -> None:
+        """Adopt a chosen option as this leg's actual transport.
+
+        Orchestration evaluates every option for a leg and then commits to one
+        that satisfies the plan's constraints. Without this, the transition
+        would keep describing M15's default pick while the schedule was built
+        from a different one, and the plan would contradict itself.
+        """
+        self.mode = option.mode
+        self.provider_id = option.provider_id
+        self.provider_name = option.provider_name
+        self.duration_minutes = option.duration_minutes
+        self.cost = option.cost
+        self.cost_known = not option.cost_is_unknown
+        self.cost_is_estimated = option.cost_is_estimated
+        self.currency = option.currency
+        self.transfers = option.transfers
+        self.confidence = option.confidence
+        self.live_status = option.live_status
+        self.booking_capability = option.booking_capability
+        self.booking_url = option.booking_url
+        self.summary = option.summary or self.summary
+        self.evidence = tuple(option.evidence)
+        # A choice the user actually made is honoured as asked, so any earlier
+        # automatic substitution no longer applies.
+        self.mode_substitution_reason = None
 
     def apply_live_status(self, report: MobilityLiveStatusReport) -> None:
         """Fold live service state into this transition.

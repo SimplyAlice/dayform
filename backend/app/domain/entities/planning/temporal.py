@@ -104,6 +104,37 @@ class DaySchedule:
     def is_open_at_all(self) -> bool:
         return not self.is_closed and (self.is_24h or len(self.ranges) > 0)
 
+    def next_available_start(self, current_time: time, duration_minutes: int | None = None) -> time | None:
+        """Find the earliest start time at or after current_time that accommodates the visit."""
+        if self.is_closed:
+            return None
+        if self.is_24h or self.can_accommodate(current_time, duration_minutes):
+            return current_time
+        # Check upcoming ranges on the same day
+        for r in self.ranges:
+            if r.start >= current_time and r.can_accommodate(r.start, duration_minutes):
+                return r.start
+        return None
+
+    def can_accommodate_window(
+        self, start_t: time, end_t: time, duration_minutes: int | None = None
+    ) -> bool:
+        """Check if any operating range allows a complete visit between start_t and end_t."""
+        if self.is_closed:
+            return False
+        if self.is_24h:
+            return True
+        dur = duration_minutes or 60
+        limit_mins = end_t.hour * 60 + end_t.minute
+        for r in self.ranges:
+            earliest = max(r.start, start_t) if r.start <= r.end else r.start
+            earliest_mins = earliest.hour * 60 + earliest.minute
+            if earliest_mins > limit_mins:
+                continue
+            if earliest_mins + dur <= limit_mins and r.can_accommodate(earliest, dur):
+                return True
+        return False
+
 
 @dataclass(frozen=True)
 class OpeningHoursSchedule:
@@ -144,17 +175,74 @@ class OpeningHoursSchedule:
             # If no time given, check whether it is open at all on that day
             return schedule.is_open_at_all()
 
-        parsed_time: time
-        if isinstance(start_t, str):
-            try:
-                parts = start_t.strip().split(":")
-                parsed_time = time(int(parts[0]), int(parts[1]))
-            except Exception:
-                return None
-        else:
-            parsed_time = start_t
+        parsed_time = _to_time(start_t)
+        if parsed_time is None:
+            return None
 
         return schedule.can_accommodate(parsed_time, duration_minutes)
+
+    def can_accommodate_window(
+        self,
+        day_str: str | None,
+        start_t: time | str | None,
+        end_t: time | str | None,
+        duration_minutes: int | None = None,
+    ) -> bool | None:
+        """Checks if a visit fits anywhere within a time window (e.g. afternoon to evening)."""
+        if self.is_unknown:
+            return None
+
+        if not day_str:
+            if self.days and all(ds.is_closed for ds in self.days.values()):
+                return False
+            return None
+
+        day = DayOfWeek.from_string(day_str)
+        if day is None or day not in self.days:
+            return None
+
+        schedule = self.days[day]
+        if schedule.is_closed:
+            return False
+
+        if start_t is None or end_t is None:
+            return schedule.is_open_at_all()
+
+        parsed_start = _to_time(start_t)
+        parsed_end = _to_time(end_t)
+        if parsed_start is None or parsed_end is None:
+            return schedule.is_open_at_all()
+
+        return schedule.can_accommodate_window(parsed_start, parsed_end, duration_minutes)
+
+    def next_available_start(
+        self,
+        day_str: str | None,
+        current_time: time | str,
+        duration_minutes: int | None = None,
+    ) -> time | None:
+        """Finds next opening time on the requested day at or after current_time."""
+        if self.is_unknown or not day_str:
+            return None
+        day = DayOfWeek.from_string(day_str)
+        if day is None or day not in self.days:
+            return None
+        parsed_time = _to_time(current_time)
+        if parsed_time is None:
+            return None
+        return self.days[day].next_available_start(parsed_time, duration_minutes)
+
+
+def _to_time(val: time | str | None) -> time | None:
+    if val is None:
+        return None
+    if isinstance(val, time):
+        return val
+    try:
+        parts = val.strip().split(":")
+        return time(int(parts[0]), int(parts[1]))
+    except Exception:
+        return None
 
 
 def _parse_time(time_str: str) -> time | None:

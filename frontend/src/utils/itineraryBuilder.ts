@@ -1,6 +1,7 @@
 import type {
   DecisionCandidateRead,
   InformationCategory,
+  RequirementCoverageRead,
   PlanTransitionRead,
   UnderstandingRead,
 } from '../types/planning';
@@ -9,7 +10,7 @@ export interface ProposedItineraryItem {
   candidate: DecisionCandidateRead;
   icon: string;
   subtitle: string;
-  costNumber: number;
+  costNumber: number | null;
   rationale: string[];
   startTime?: string;
   endTime?: string;
@@ -56,11 +57,54 @@ export function getCategoryIcon(category: string): string {
 /**
  * Parses numeric cost from string/number safely.
  */
-export function parseCandidateCost(cost: string | number | null | undefined): number {
-  if (cost === null || cost === undefined) return 0;
-  if (typeof cost === 'number') return cost;
-  const parsed = parseFloat(cost);
-  return isNaN(parsed) ? 0 : parsed;
+export function parseCandidateCost(cost: string | number | null | undefined): number | null {
+  return knownCandidateCost(cost);
+}
+
+export function knownCandidateCost(cost: string | number | null | undefined): number | null {
+  if (cost === null || cost === undefined || (typeof cost === 'string' && !cost.trim())) return null;
+  const parsed = typeof cost === 'number' ? cost : parseFloat(cost);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function formatExactCurrency(amount: number): string {
+  const rounded = Math.round((amount + Number.EPSILON) * 100) / 100;
+  return Number.isInteger(rounded) ? formatCurrency(rounded) : `R${rounded.toFixed(2)}`;
+}
+
+export interface ItineraryCostSummary {
+  knownTotal: number;
+  hasUnknownCosts: boolean;
+  totalLabel: string;
+  remainingBudget: number | null;
+  isOverBudget: boolean;
+}
+
+export function summarizeItineraryCosts(
+  stopCosts: Array<string | number | null | undefined>,
+  knownTransportCost: string | number | null | undefined,
+  hasUnknownTransportCost: boolean,
+  budgetMax: number | null
+): ItineraryCostSummary {
+  const knownStopCosts = stopCosts.map(knownCandidateCost);
+  const knownTransport = knownCandidateCost(knownTransportCost) ?? 0;
+  const knownTotal = Math.round(
+    knownStopCosts.reduce<number>((sum, cost) => sum + (cost ?? 0), knownTransport) * 100
+  ) / 100;
+  const hasUnknownCosts = knownStopCosts.some((cost) => cost === null) || hasUnknownTransportCost;
+  const amount = knownTotal === 0 ? 'R0' : formatExactCurrency(knownTotal);
+
+  return {
+    knownTotal,
+    hasUnknownCosts,
+    totalLabel: hasUnknownCosts
+      ? knownTotal === 0 ? 'Price unavailable' : `At least ${amount}`
+      : amount,
+    remainingBudget: budgetMax !== null && !hasUnknownCosts
+      ? Math.round((budgetMax - knownTotal) * 100) / 100
+      : null,
+    isOverBudget: budgetMax !== null && knownTotal > budgetMax,
+  };
 }
 
 /**
@@ -185,6 +229,24 @@ export function travelMinutesForItems(
   });
 }
 
+export function parseOpeningMinutes(hoursStr?: string | null): number | null {
+  if (!hoursStr) return null;
+  const m = /(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/.exec(hoursStr);
+  if (m) {
+    return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  }
+  return null;
+}
+
+export function parseClosingMinutes(hoursStr?: string | null): number | null {
+  if (!hoursStr) return null;
+  const m = /(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/.exec(hoursStr);
+  if (m) {
+    return parseInt(m[3], 10) * 60 + parseInt(m[4], 10);
+  }
+  return null;
+}
+
 export function assignTimeSlots(
   items: ProposedItineraryItem[],
   understanding?: UnderstandingRead | null,
@@ -194,7 +256,23 @@ export function assignTimeSlots(
   const base = getBaseStartTimeMinutes(understanding);
   let currentCursor = base.minutes;
 
+  // If Stop 1 opens after the base start time, adjust start to when it actually opens
+  if (items[0]?.candidate.opening_hours) {
+    const openMins = parseOpeningMinutes(items[0].candidate.opening_hours);
+    if (openMins !== null && currentCursor < openMins) {
+      currentCursor = openMins;
+    }
+  }
+
   return items.map((item, idx) => {
+    // If subsequent stop opens later than arrival, push cursor to its opening time
+    if (idx > 0 && item.candidate.opening_hours) {
+      const openMins = parseOpeningMinutes(item.candidate.opening_hours);
+      if (openMins !== null && currentCursor < openMins) {
+        currentCursor = openMins;
+      }
+    }
+
     const dur = item.candidate.duration_minutes || (item.candidate.option_type === 'place' ? 90 : 60);
     const startStr = formatMinutesToTime(currentCursor);
     const endCursor = currentCursor + dur;
@@ -230,7 +308,7 @@ export function humanizeCandidateReasons(
     humanReasons.push('Menu or admission prices vary by choice.');
   } else if (cost === 0) {
     humanReasons.push('Free to enjoy — zero impact on your budget.');
-  } else if (budgetMax !== null && cost <= budgetMax) {
+  } else if (cost !== null && budgetMax !== null && cost <= budgetMax) {
     humanReasons.push(`Fits comfortably within your ${formatCurrency(budgetMax)} budget.`);
   }
 
@@ -314,6 +392,9 @@ export function getTradeOffNote(
   }
 
   const currentCost = parseCandidateCost(currentCandidate.cost);
+  if (altCost === null || currentCost === null) {
+    return 'Price not listed';
+  }
   const diff = altCost - currentCost;
 
   if (diff < 0) {
@@ -376,11 +457,38 @@ export function buildProposalNarrative(
     return `A fun group plan tailored for ${countStr}.`;
   }
 
+  if (understanding?.experience_requirements?.includes('quiet_focus')) {
+    const budgetNote = remainingBudget !== null && remainingBudget > 0 ? `, with ${formatCurrency(remainingBudget)} left in your budget.` : '.';
+    const isCozy = understanding.preferences?.includes('cozy') || understanding.semantic_descriptors?.includes('cozy');
+    const vibeWord = isCozy ? 'cozy' : 'quiet';
+    return `A ${vibeWord} afternoon spot to relax and read${budgetNote}`;
+  }
+
+  if (understanding?.experience_requirements?.includes('painting')) {
+    const budgetNote = remainingBudget !== null && remainingBudget > 0 ? `, with ${formatCurrency(remainingBudget)} left to spare.` : '.';
+    return `A scenic outdoor spot tailored for painting and creative time${budgetNote}`;
+  }
+
+  if (understanding?.experience_requirements?.includes('shopping')) {
+    const budgetNote = remainingBudget !== null && remainingBudget > 0 ? `, with ${formatCurrency(remainingBudget)} left in your budget.` : '.';
+    return `A curated shopping outing tailored to your afternoon${budgetNote}`;
+  }
+
+  if (understanding?.experience_requirements?.includes('historic_streets')) {
+    const budgetNote = remainingBudget !== null && remainingBudget > 0 ? `, with ${formatCurrency(remainingBudget)} left in your budget.` : '.';
+    return `A walk through historic streets and architecture${budgetNote}`;
+  }
+
   if (categories.has('food') && (categories.has('nature') || categories.has('culture'))) {
     if (remainingBudget !== null && remainingBudget > 0) {
       return `A balanced plan with something fun to do, good food, and ${formatCurrency(remainingBudget)} left in your budget.`;
     }
     return 'A balanced plan with something fun to do and great food.';
+  }
+
+  if (items.length === 1 && categories.has('food')) {
+    const budgetNote = remainingBudget !== null && remainingBudget > 0 ? `, with ${formatCurrency(remainingBudget)} left in your budget.` : '.';
+    return `A standout dining experience tailored to your request${budgetNote}`;
   }
 
   if (categories.has('food')) {
@@ -396,18 +504,211 @@ export function buildProposalNarrative(
 
 
 /**
- * Assembles a coherent proposed itinerary from ranked recommendation candidates.
+ * Haversine distance in kilometers between two geo coordinates.
+ */
+export function calculateHaversineDistance(
+  lat1?: number | null,
+  lon1?: number | null,
+  lat2?: number | null,
+  lon2?: number | null
+): number | null {
+  if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) return null;
+  const R = 6371;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+const REQUIREMENT_KEYWORDS: Record<string, string[]> = {
+  meal: ['restaurant', 'cafe', 'café', 'bistro', 'coffee', 'roastery', 'lunch', 'dinner', 'breakfast', 'brunch', 'food', 'bakery', 'tasting'],
+  quiet_focus: ['book', 'books', 'bookshop', 'bookstore', 'library', 'reading', 'read', 'study', 'quiet', 'workspace'],
+  local_culture: ['culture', 'cultural', 'heritage', 'museum', 'art gallery', 'history', 'community'],
+  museum: ['museum', 'museums'],
+  historic_streets: ['historic', 'historical', 'heritage', 'bo-kaap', 'architecture', 'monument', 'old town', 'cobbled'],
+  craft_food_market: ['market', 'craft market', 'food market', 'farmers market', 'food hall', 'bazaar'],
+  local_market: ['market', 'bazaar', 'produce', 'stalls'],
+  live_music: ['music', 'live jazz', 'jazz', 'concert', 'band'],
+  scenic_views: ['view', 'views', 'panoramic', 'lookout', 'scenic', 'summit', 'cableway'],
+  beach: ['beach', 'ocean', 'seaside', 'coastline', 'shore', 'promenade'],
+  art: ['art', 'gallery', 'exhibition', 'sculpture'],
+  shopping: ['shop', 'shopping', 'boutique', 'vintage', 'thrift', 'curio'],
+  painting: ['paint', 'painting', 'sketch', 'plein air', 'scenic', 'garden', 'landscape'],
+};
+
+export function candidateMatchesRequirement(
+  candidate: DecisionCandidateRead,
+  reqSlug: string
+): boolean {
+  if (candidate.reasons) {
+    const hasReason = candidate.reasons.some(
+      (r) =>
+        r.type === 'requirement' &&
+        r.outcome === 'supported' &&
+        r.message?.toLowerCase().includes(reqSlug.replace('_', ' '))
+    );
+    if (hasReason) return true;
+  }
+
+  const keywords = REQUIREMENT_KEYWORDS[reqSlug];
+  if (!keywords) return false;
+
+  const text = `${candidate.name} ${candidate.description || ''} ${candidate.category}`.toLowerCase();
+  return keywords.some((kw) => text.includes(kw));
+}
+
+export function isExplicitSingleExperience(
+  intentText: string,
+  experienceRequirements: string[]
+): boolean {
+  const lowerIntent = intentText.toLowerCase();
+  const hasNamedDestination = experienceRequirements.length === 0 &&
+    /\b(?:take me to|go to|visit|head to)\s+(?:the\s+)?[a-z]/.test(lowerIntent);
+  return (experienceRequirements.length === 1 || hasNamedDestination) &&
+    !/\b(?:and|then|afterwards|followed by|plus)\b/.test(lowerIntent) &&
+    !/\b(?:day out|something to do|an activity)\b/.test(lowerIntent);
+}
+
+function explicitDestinationFromIntent(intentText: string): string | null {
+  const match = /\b(?:take me to|go to|visit|head to)\s+(?:the\s+)?(.+?)(?=\s+\b(?:by|in|under|after|before|at|with)\b|[.,!?]|$)/i.exec(intentText);
+  return match?.[1]?.trim() || null;
+}
+
+export function explainUnmetRequirement(
+  requirement: Pick<RequirementCoverageRead, 'slug' | 'label'>,
+  candidates: DecisionCandidateRead[],
+  removedStops: Array<{ name: string; reason: string }> = [],
+  budgetMax: number | null = null,
+  area: string | null = null
+): string {
+  const matches = candidates.filter((candidate) => candidateMatchesRequirement(candidate, requirement.slug));
+  const removed = removedStops.find((stop) => matches.some((candidate) => candidate.name === stop.name));
+  if (removed) {
+    return `${requirement.label} was left out because ${removed.reason}.`;
+  }
+
+  const allHaveViolation = (type: DecisionCandidateRead['reasons'][number]['type']) =>
+    matches.length > 0 && matches.every((candidate) =>
+      candidate.reasons.some((reason) => reason.type === type && reason.outcome === 'violated')
+    );
+
+  if (allHaveViolation('budget') && budgetMax !== null) {
+    return `The ${requirement.label.toLowerCase()} options found exceed your ${formatCurrency(budgetMax)} budget.`;
+  }
+  if (allHaveViolation('opening_hours') || allHaveViolation('time_window')) {
+    return `The ${requirement.label.toLowerCase()} options found are not open during the requested time.`;
+  }
+  if (allHaveViolation('location')) {
+    return `No ${requirement.label.toLowerCase()} option could be verified in ${area || 'the requested area'}.`;
+  }
+  if (allHaveViolation('group_size')) {
+    return `The ${requirement.label.toLowerCase()} options found cannot accommodate your group.`;
+  }
+  if (matches.length === 0) {
+    return `No verified option for ${requirement.label.toLowerCase()} was found${area ? ` in ${area}` : ''}.`;
+  }
+
+  return `An option for ${requirement.label.toLowerCase()} was found, but it is not included in this itinerary.`;
+}
+
+export function isDiningCandidate(candidate: DecisionCandidateRead): boolean {
+  if (candidate.category === 'food') return true;
+  const text = `${candidate.name} ${candidate.description || ''}`.toLowerCase();
+  return (
+    text.includes('restaurant') ||
+    text.includes('cafe') ||
+    text.includes('café') ||
+    text.includes('bistro') ||
+    text.includes('coffee') ||
+    text.includes('roastery') ||
+    text.includes('bakery') ||
+    text.includes('brunch')
+  );
+}
+
+export function isMorningCoffeeOrBreakfast(candidate: DecisionCandidateRead): boolean {
+  const text = `${candidate.name} ${candidate.description || ''}`.toLowerCase();
+  return (
+    text.includes('coffee') ||
+    text.includes('roastery') ||
+    text.includes('espresso') ||
+    text.includes('breakfast') ||
+    text.includes('bakery') ||
+    text.includes('cafe') ||
+    text.includes('café')
+  );
+}
+
+export function isDinnerOrEvening(candidate: DecisionCandidateRead): boolean {
+  const text = `${candidate.name} ${candidate.description || ''}`.toLowerCase();
+  return (
+    text.includes('dinner') ||
+    text.includes('wine bar') ||
+    text.includes('tasting menu') ||
+    text.includes('evening') ||
+    text.includes('cocktails')
+  );
+}
+
+export function orderStopsSensibly(
+  stops: DecisionCandidateRead[],
+  _understanding?: UnderstandingRead | null
+): DecisionCandidateRead[] {
+  if (stops.length < 2) return stops;
+  const [a, b] = stops;
+
+  // Rule 1: Closing hours pressure (earlier-closing venue must be visited before it closes)
+  const aClose = parseClosingMinutes(a.opening_hours);
+  const bClose = parseClosingMinutes(b.opening_hours);
+  if (aClose !== null && bClose !== null && Math.abs(aClose - bClose) >= 120) {
+    if (aClose < bClose) return [a, b];
+    return [b, a];
+  }
+
+  // Rule 2: Morning coffee / breakfast comes first
+  const aCoffee = isMorningCoffeeOrBreakfast(a);
+  const bCoffee = isMorningCoffeeOrBreakfast(b);
+  const aDinner = isDinnerOrEvening(a);
+  const bDinner = isDinnerOrEvening(b);
+
+  if (aCoffee && !bCoffee) return [a, b];
+  if (bCoffee && !aCoffee) return [b, a];
+
+  // Rule 3: Daytime activity precedes dinner/evening
+  if (aDinner && !bDinner) return [b, a];
+  if (bDinner && !aDinner) return [a, b];
+
+  // Rule 4: Culture / Nature activity before general dining meal
+  const aIsDining = isDiningCandidate(a);
+  const bIsDining = isDiningCandidate(b);
+  if (!aIsDining && bIsDining) return [a, b];
+  if (aIsDining && !bIsDining) return [b, a];
+
+  return [a, b];
+}
+
+/**
+ * Assembles an intentionally composed proposed itinerary from ranked recommendation candidates.
  *
- * Understanding-aware and constraint-respecting:
- * - Strictly filters out candidates violating exclusions (e.g. no outdoor, not fancy).
- * - Prioritizes requested themes (food, outdoors, culture, date) when present.
- * - Otherwise builds a varied, non-repetitive sequence across categories.
- * - Strictly enforces budget limits.
+ * Evaluates:
+ * 1. Requirement coverage: ensures multiple explicit user requirements are each satisfied.
+ * 2. Semantic relevance: tests genuine evidence text, not broad categories.
+ * 3. Variety: avoids redundant dining stops; pairs complementary experiences.
+ * 4. Geographic coherence: minimizes transit distance and favors walkable/clustered pairs.
+ * 5. Temporal coherence: fits verified opening hours and time windows.
+ * 6. Budget coherence: strictly respects budget ceiling.
+ * 7. Sensible sequencing: orders stops naturally across the day (morning coffee -> activity -> dining).
  */
 export function buildProposedItinerary(
   candidates: DecisionCandidateRead[],
   budgetMax: number | null,
-  _intentText: string = '',
+  intentText: string = '',
   groupSize: number = 1,
   understanding?: UnderstandingRead | null,
   tradeOffSummary?: string | null
@@ -429,7 +730,7 @@ export function buildProposedItinerary(
       eligible = eligible.filter((c) => {
         const cost = parseCandidateCost(c.cost);
         const nameLower = c.name.toLowerCase();
-        return cost < 400 && !nameLower.includes('fine dining') && !nameLower.includes('luxury');
+        return cost !== null && cost < 400 && !nameLower.includes('fine dining') && !nameLower.includes('luxury');
       });
     }
   }
@@ -446,72 +747,162 @@ export function buildProposedItinerary(
     };
   }
 
-  const durationLimit = understanding?.duration_limit_minutes || null;
-  const deadlineMins = understanding?.end_time ? parseTimeToMinutes(understanding.end_time) : null;
-  const baseStart = getBaseStartTimeMinutes(understanding).minutes;
+  // A single named experience is not a request for a generic second stop.
+  // Keep variety pairing for prompts that explicitly connect multiple activities.
+  const isExplicitSingleStop = isExplicitSingleExperience(
+    intentText,
+    understanding?.experience_requirements || []
+  );
 
   const selectedCandidates: DecisionCandidateRead[] = [];
   const selectedOptionIds = new Set<string>();
-  const selectedCategories = new Set<string>();
-  let currentCost = 0;
-  let accumulatedDuration = 0;
 
-  const canAddCandidate = (candidate: DecisionCandidateRead): boolean => {
-    const cost = parseCandidateCost(candidate.cost);
-    if (budgetMax !== null && currentCost + cost > budgetMax) {
-      return false;
-    }
-    const dur = candidate.duration_minutes || (candidate.option_type === 'place' ? 90 : 60);
-    if (durationLimit !== null && accumulatedDuration + dur > durationLimit) {
-      return false;
-    }
-    if (deadlineMins !== null && baseStart + accumulatedDuration + dur > deadlineMins) {
-      return false;
-    }
-    return true;
+  const canAfford = (c: DecisionCandidateRead, extraCost: number = 0): boolean => {
+    if (budgetMax === null) return true;
+    const cost = parseCandidateCost(c.cost);
+    return cost !== null && extraCost + cost <= budgetMax;
   };
 
-  const addCandidate = (candidate: DecisionCandidateRead) => {
-    selectedCandidates.push(candidate);
-    selectedOptionIds.add(candidate.option_id);
-    selectedCategories.add(candidate.category);
-    currentCost += parseCandidateCost(candidate.cost);
-    const dur = candidate.duration_minutes || (candidate.option_type === 'place' ? 90 : 60);
-    accumulatedDuration += dur;
-  };
+  const experienceReqs = understanding?.experience_requirements || [];
 
-  // 1. If user has a strong focus or activity_type preference, pick top candidate from that category first
-  const preferredCats = understanding?.activity_types || [];
-  if (preferredCats.length > 0) {
-    for (const cat of preferredCats) {
-      const match = eligible.find((c) => c.category === cat && !selectedOptionIds.has(c.option_id));
-      if (match && canAddCandidate(match)) {
-        addCandidate(match);
-        break;
+  // COMPOSITION STRATEGY 1: Multiple explicit experience requirements (e.g. coffee + bookshop, or lunch + art)
+  if (experienceReqs.length >= 2 && !isExplicitSingleStop) {
+    const reqA = experienceReqs[0];
+    const reqB = experienceReqs[1];
+
+    const candsA = eligible.filter((c) => candidateMatchesRequirement(c, reqA));
+    const candsB = eligible.filter((c) => candidateMatchesRequirement(c, reqB));
+
+    let bestPair: [DecisionCandidateRead, DecisionCandidateRead] | null = null;
+    let bestScore = -Infinity;
+
+    for (const a of candsA) {
+      if (!canAfford(a)) continue;
+      const costA = parseCandidateCost(a.cost);
+      if (costA === null) continue;
+
+      for (const b of candsB) {
+        if (a.option_id === b.option_id) continue;
+        if (!canAfford(b, costA)) continue;
+
+        // Variety check: do not pair 2 dining spots unless both requirements explicitly asked for food
+        const bothDining = isDiningCandidate(a) && isDiningCandidate(b);
+        if (bothDining && (reqA !== 'meal' || reqB !== 'meal')) {
+          continue;
+        }
+
+        // Geographic affinity
+        let geoBonus = 0;
+        const dist = calculateHaversineDistance(a.latitude, a.longitude, b.latitude, b.longitude);
+        if (dist !== null) {
+          if (dist <= 1.5) geoBonus = 60; // Walking distance!
+          else if (dist <= 4.0) geoBonus = 30; // Short ride
+          else if (dist > 10.0) geoBonus = -40; // Avoid excessive travel
+        } else if (a.location && b.location && a.location.toLowerCase() === b.location.toLowerCase()) {
+          geoBonus = 25;
+        }
+
+        const pairScore = a.score + b.score + geoBonus;
+        if (pairScore > bestScore) {
+          bestScore = pairScore;
+          bestPair = [a, b];
+        }
       }
     }
-  }
 
-  // 2. Add candidates with category diversity up to 3 items, staying within budget & time
-  const maxItems = 3;
-  for (const candidate of eligible) {
-    if (selectedCandidates.length >= maxItems) break;
-    if (selectedOptionIds.has(candidate.option_id)) continue;
-    if (!canAddCandidate(candidate)) continue;
-
-    if (!selectedCategories.has(candidate.category) || selectedCandidates.length === 0) {
-      addCandidate(candidate);
+    if (bestPair) {
+      const ordered = orderStopsSensibly(bestPair, understanding);
+      selectedCandidates.push(...ordered);
+      ordered.forEach((c) => selectedOptionIds.add(c.option_id));
     }
   }
 
-  // 3. Fallback: if we still have room, budget, and time, fill with any remaining eligible items
-  if (selectedCandidates.length < maxItems) {
-    for (const candidate of eligible) {
-      if (selectedCandidates.length >= maxItems) break;
-      if (selectedOptionIds.has(candidate.option_id)) continue;
-      if (!canAddCandidate(candidate)) continue;
+  // COMPOSITION STRATEGY 2: Single-focus or standard 2-stop composition if strategy 1 did not produce a pair
+  if (selectedCandidates.length === 0) {
+    if (experienceReqs.length >= 2) {
+      const topCand = eligible.find(
+        (candidate) => experienceReqs.some((requirement) => candidateMatchesRequirement(candidate, requirement)) && canAfford(candidate)
+      );
+      if (topCand) {
+        selectedCandidates.push(topCand);
+        selectedOptionIds.add(topCand.option_id);
+      }
+    } else if (isExplicitSingleStop) {
+      const explicitRequirement = experienceReqs[0];
+      const explicitDestination = experienceReqs.length === 0
+        ? explicitDestinationFromIntent(intentText)?.toLowerCase()
+        : null;
+      const topCand = eligible.find(
+        (candidate) =>
+          (explicitRequirement
+            ? candidateMatchesRequirement(candidate, explicitRequirement)
+            : Boolean(explicitDestination && `${candidate.name} ${candidate.location || ''} ${candidate.address || ''}`.toLowerCase().includes(explicitDestination))) &&
+          canAfford(candidate)
+      );
+      if (topCand) {
+        selectedCandidates.push(topCand);
+        selectedOptionIds.add(topCand.option_id);
+      }
+    } else {
+      // Pick Stop 1: top scoring candidate matching preferred categories or highest overall
+      const preferredCats = understanding?.activity_types || [];
+      let topCand = preferredCats.length > 0
+        ? eligible.find((c) => preferredCats.includes(c.category) && canAfford(c))
+        : null;
+      if (!topCand) {
+        topCand = eligible.find((c) => canAfford(c)) || null;
+      }
 
-      addCandidate(candidate);
+      if (topCand) {
+        selectedCandidates.push(topCand);
+        selectedOptionIds.add(topCand.option_id);
+        const cost1 = parseCandidateCost(topCand.cost) ?? 0;
+
+        // Pick Stop 2: prioritize variety and geographic coherence
+        const isStop1Dining = isDiningCandidate(topCand);
+        let bestStop2: DecisionCandidateRead | null = null;
+        let bestStop2Score = -Infinity;
+
+        for (const cand of eligible) {
+          if (selectedOptionIds.has(cand.option_id)) continue;
+          if (!canAfford(cand, cost1)) continue;
+
+          // Variety score: prefer complementary experience over duplicate category
+          let varietyScore = 0;
+          const isCandDining = isDiningCandidate(cand);
+          if (isStop1Dining && isCandDining) {
+            varietyScore = -50; // Strongly avoid 2 restaurants in a standard day out
+          } else if (topCand.category !== cand.category) {
+            varietyScore = 30; // Complementary variety
+          }
+
+          // Geographic affinity
+          let geoScore = 0;
+          const dist = calculateHaversineDistance(topCand.latitude, topCand.longitude, cand.latitude, cand.longitude);
+          if (dist !== null) {
+            if (dist <= 1.5) geoScore = 50;
+            else if (dist <= 4.0) geoScore = 25;
+            else if (dist > 10.0) geoScore = -35;
+          } else if (topCand.location && cand.location && topCand.location.toLowerCase() === cand.location.toLowerCase()) {
+            geoScore = 20;
+          }
+
+          const combined = cand.score + varietyScore + geoScore;
+          if (combined > bestStop2Score) {
+            bestStop2Score = combined;
+            bestStop2 = cand;
+          }
+        }
+
+        if (bestStop2) {
+          selectedCandidates.push(bestStop2);
+          selectedOptionIds.add(bestStop2.option_id);
+          // Order the 2 stops logically
+          const ordered = orderStopsSensibly(selectedCandidates, understanding);
+          selectedCandidates.length = 0;
+          selectedCandidates.push(...ordered);
+        }
+      }
     }
   }
 
@@ -525,9 +916,10 @@ export function buildProposedItinerary(
   }));
 
   const items = assignTimeSlots(rawItems, understanding);
-
+  const currentCost = items.reduce((sum, it) => sum + (it.costNumber ?? 0), 0);
   const alternatives = eligible.filter((c) => !selectedOptionIds.has(c.option_id));
-  const remainingBudget = budgetMax !== null ? budgetMax - currentCost : null;
+  const hasUnknownCosts = items.some((item) => item.costNumber === null);
+  const remainingBudget = budgetMax !== null && !hasUnknownCosts ? budgetMax - currentCost : null;
   const isOverBudget = remainingBudget !== null && remainingBudget < 0;
   const narrativeSubheading = buildProposalNarrative(items, budgetMax, remainingBudget, understanding);
   const attribution = candidates.find((c) => c.attribution)?.attribution || null;
@@ -564,10 +956,11 @@ export function recalculateItinerary(
   travelMinutes: number[] = []
 ): ProposedItinerary {
   const slottedItems = assignTimeSlots(items, understanding, travelMinutes);
-  const currentCost = slottedItems.reduce((sum, item) => sum + item.costNumber, 0);
+  const currentCost = slottedItems.reduce((sum, item) => sum + (item.costNumber ?? 0), 0);
   const selectedIds = new Set(slottedItems.map((i) => i.candidate.option_id));
   const alternatives = allEligibleCandidates.filter((c) => !selectedIds.has(c.option_id));
-  const remainingBudget = budgetMax !== null ? budgetMax - currentCost : null;
+  const hasUnknownCosts = slottedItems.some((item) => item.costNumber === null);
+  const remainingBudget = budgetMax !== null && !hasUnknownCosts ? budgetMax - currentCost : null;
   const isOverBudget = remainingBudget !== null && remainingBudget < 0;
   const narrativeSubheading = buildProposalNarrative(slottedItems, budgetMax, remainingBudget, understanding);
   const attribution = allEligibleCandidates.find((c) => c.attribution)?.attribution || null;

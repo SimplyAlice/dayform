@@ -5,8 +5,16 @@ from decimal import Decimal
 from uuid import UUID
 
 from app.application.planning.ports import PlanningUnderstandingPort
+from app.domain.entities.planning.areas import NAMED_AREAS
 from app.domain.entities.planning.constraints import BudgetConstraint, BudgetStyle, TemporalConstraint
 from app.domain.entities.planning.information import InformationCategory
+from app.domain.entities.planning.requirements import (
+    REQUIREMENT_TAXONOMY,
+    REQUIREMENT_TRIGGERS,
+    IntentRequirement,
+    RequirementKind,
+    requirement_by_slug,
+)
 from app.domain.entities.planning.understanding import BudgetKind, PlanningUnderstanding, ProvenanceKind
 
 
@@ -76,6 +84,18 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
         if duration_limit:
             provenance["duration_limit"] = ProvenanceKind.EXPLICIT.value
 
+        # An explicit deadline outranks an inferred start time. Without this, a
+        # request like "...a long dinner, finished by 14:00" infers an evening
+        # start that lands after the stated limit, and the two contradict.
+        if deadline and start_time and deadline <= start_time:
+            provenance["start_time"] = ProvenanceKind.DEFAULTED.value
+            ambiguities.append(
+                "A start time was not stated, so the day is planned to begin early enough "
+                "to finish before the time you gave."
+            )
+            start_time = None
+            time_window = f"until_{deadline}"
+
         # 4. Location semantics
         location, is_inferred, loc_prov, location_descriptors = self._extract_location(normalized)
         provenance["location"] = loc_prov.value
@@ -106,8 +126,17 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
         # 9. Semantic descriptors (open-ended vibes, aesthetics, activities)
         semantic_descriptors = self._extract_semantic_descriptors(normalized, location_descriptors)
 
-        # 10. Activity categories
-        activity_types = self._extract_activity_types(normalized, occasion, preferences)
+        # 10. Explicit intent requirements, kept distinct from the broad
+        # categories below so "historic streets" is not lost inside "culture".
+        # Extracted before activity categories: a specific thing the user asked
+        # for must not be papered over by broad keyword categories, so the
+        # category step consults what was actually requested.
+        requirements = self._extract_requirements(normalized, preferences)
+        if requirements:
+            provenance["experience_requirements"] = ProvenanceKind.EXPLICIT.value
+
+        # 10b. Activity categories
+        activity_types = self._extract_activity_types(normalized, occasion, preferences, requirements)
         if activity_types:
             provenance["activity_types"] = ProvenanceKind.INFERRED.value
 
@@ -143,6 +172,7 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             duration_limit_minutes=duration_limit,
             location=location,
             location_is_inferred=is_inferred,
+            origin=DeterministicUnderstandingEngine._extract_origin(request),
             transport_mode=transport_mode,
             budget_amount=budget_amount,
             budget_kind=budget_kind,
@@ -152,6 +182,7 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             exclusions=tuple(exclusions),
             activity_types=tuple(activity_types),
             semantic_descriptors=tuple(semantic_descriptors),
+            experience_requirements=tuple(req.slug for req in requirements),
             setting_preference=setting_pref,
             weather_context=weather_ctx,
             ambiguities=tuple(ambiguities),
@@ -511,27 +542,47 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             ambiguities,
         )
 
+    NEIGHBORHOODS = {
+        "sea point": "Sea Point",
+        "camps bay": "Camps Bay",
+        "v&a": "Waterfront",
+        "waterfront": "Waterfront",
+        "bo-kaap": "Bo-Kaap",
+        "gardens": "Gardens",
+        "kloof street": "Kloof Street",
+        "bree street": "Bree Street",
+        "constantia": "Constantia",
+        "green point": "Green Point",
+        "newlands": "Newlands",
+        "woodstock": "Woodstock",
+        "kalk bay": "Kalk Bay",
+        "observatory": "Observatory",
+        "city bowl": "City Bowl",
+        "claremont": "Claremont",
+        "rondebosch": "Rondebosch",
+        "muizenberg": "Muizenberg",
+        "kirstenbosch": "Kirstenbosch",
+        "salt river": "Salt River",
+    }
+
     @staticmethod
     def _extract_location(text: str) -> tuple[str, bool, ProvenanceKind, list[str]]:
+        # The origin is where the day starts; the area is where it is going.
+        # A phrase like "I'm starting from Observatory" must not be read as the
+        # destination, so the origin clause is removed before area extraction.
+        text = DeterministicUnderstandingEngine._strip_origin_clause(text)
         lower = text.lower()
         extracted_descriptors: list[str] = []
 
+        # A named region is checked before individual suburbs so that "in the
+        # Southern Suburbs" is kept whole instead of being reduced to whatever
+        # suburb name happens to be mentioned inside it.
+        for token, scope in NAMED_AREAS.items():
+            if re.search(rf"\b{token}\b", lower):
+                return scope.label, False, ProvenanceKind.EXPLICIT, extracted_descriptors
+
         # Explicit known neighborhoods
-        neighborhood_map = {
-            "sea point": "Sea Point",
-            "camps bay": "Camps Bay",
-            "v&a": "Waterfront",
-            "waterfront": "Waterfront",
-            "bo-kaap": "Bo-Kaap",
-            "gardens": "Gardens",
-            "kloof street": "Kloof Street",
-            "bree street": "Bree Street",
-            "constantia": "Constantia",
-            "green point": "Green Point",
-            "newlands": "Newlands",
-            "woodstock": "Woodstock",
-            "kalk bay": "Kalk Bay",
-        }
+        neighborhood_map = DeterministicUnderstandingEngine.NEIGHBORHOODS
         for token, loc_name in neighborhood_map.items():
             if re.search(rf"\b{token}\b", lower):
                 return loc_name, False, ProvenanceKind.EXPLICIT, extracted_descriptors
@@ -570,6 +621,77 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
 
         # Default context
         return "Cape Town", True, ProvenanceKind.DEFAULTED, extracted_descriptors
+
+    ORIGIN_PATTERNS = (
+        r"\b(?:starting|start|starts|leaving|leave|setting off|setting out|based)\s+"
+        r"(?:from|in|at|out\s+of)\s+(?P<place>[^.,;!?]+)",
+        r"\bfrom\s+my\s+(?:hotel|home|house|flat|apartment|office|place|airbnb|accommodation|guesthouse)\s+"
+        r"(?:in|near|at)\s+(?P<place>[^.,;!?]+)",
+        r"\bi(?:'m|\s+am)\s+(?:currently\s+)?(?:in|at|based in)\s+(?P<place>[^.,;!?]+)",
+        r"\bi\s+live\s+in\s+(?P<place>[^.,;!?]+)",
+    )
+
+    @staticmethod
+    def _strip_origin_clause(text: str) -> str:
+        """Remove any origin phrase so it cannot be mistaken for a destination."""
+        stripped = text
+        for pattern in DeterministicUnderstandingEngine.ORIGIN_PATTERNS:
+            stripped = re.sub(pattern, " ", stripped, flags=re.IGNORECASE)
+        return stripped
+
+    @staticmethod
+    def _extract_origin(text: str) -> str | None:
+        """Extract an explicitly stated starting point for the day.
+
+        Origin is never inferred. A request that does not say where the day starts
+        leaves this `None`, which is a truthful signal that the first transport leg
+        is unresolved rather than a licence to assume the user's location.
+        """
+        lower = text.lower()
+
+        for pattern in DeterministicUnderstandingEngine.ORIGIN_PATTERNS:
+            match = re.search(pattern, lower)
+            if not match:
+                continue
+            raw = match.group("place").strip()
+            resolved = DeterministicUnderstandingEngine._resolve_place_phrase(raw)
+            if resolved:
+                return resolved
+
+        return None
+
+    @staticmethod
+    def _resolve_place_phrase(phrase: str) -> str | None:
+        """Reduce a captured origin phrase to a usable place name, or reject it.
+
+        A phrase is only accepted when it names somewhere real: a known Cape Town
+        neighbourhood, or a non-empty fragment that is not obviously describing a
+        mood, a duration or a budget.
+        """
+        cleaned = phrase.strip().strip(".")
+        if not cleaned:
+            return None
+
+        for token, canonical in DeterministicUnderstandingEngine.NEIGHBORHOODS.items():
+            if re.search(rf"\b{token}\b", cleaned):
+                return canonical
+
+        if re.search(r"\bcape town\b|\bcbd\b", cleaned):
+            return "Cape Town"
+
+        # Reject fragments that clearly are not places.
+        if len(cleaned) < 3:
+            return None
+        if re.match(r"^(?:a|an|the|home|here|there)\b", cleaned):
+            return None
+        if re.search(r"\br\d|\b(?:rand|bucks)\b|\bunder\b|\bbudget\b", cleaned):
+            return None
+
+        # Cap at a few words: anything longer is a clause, not a place name.
+        words = cleaned.split()
+        if len(words) > 4:
+            return None
+        return " ".join(words).strip()
 
     @staticmethod
     def _extract_budget(text: str) -> tuple[Decimal | None, BudgetKind, ProvenanceKind, BudgetConstraint]:
@@ -719,6 +841,7 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             (r"\b(?:take photos|take pictures|photoshoot|photogenic|instagrammable)\b", "take photos"),
             (r"\b(?:coffee|specialty coffee|roastery|cafe)\b", "coffee"),
             (r"\b(?:reading|read|study|bookstore|books)\b", "reading"),
+            (r"\b(?:cozy|cosy)\b", "cozy"),
             (r"\b(?:romantic|candlelit|intimate)\b", "romantic"),
             (r"\b(?:scenic|panoramic|views)\b", "scenic"),
             (r"\b(?:kids|family friendly|children)\b", "family friendly"),
@@ -728,7 +851,7 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
             (r"\b(?:fancy|fine dining|upscale|luxury)\b", "fancy"),
             (r"\b(?:pretty|aesthetic|cute)\b", "pretty"),
             (r"\b(?:doesn't feel cheap|quality)\b", "quality"),
-            (r"\b(?:bored|fun)\b", "fun"),
+            (r"\b(?:something fun|somewhere fun)\b", "fun"),
         ]
         for pattern, label in patterns:
             if re.search(pattern, lower) and label not in descriptors:
@@ -782,8 +905,11 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
         if re.search(r"\b(?:fun|something fun|exciting|entertaining|adventurous)\b", lower):
             preferences.append("fun")
 
-        if re.search(r"\b(?:romantic|intimate|cozy|cute)\b", lower):
+        if re.search(r"\b(?:romantic|candlelit|date night)\b", lower):
             preferences.append("romantic")
+
+        if re.search(r"\b(?:cozy|cosy)\b", lower):
+            preferences.append("cozy")
 
         if re.search(r"\b(?:food[ -]focused|foodie|good food|great food|delicious|tasting|dinner|lunch|breakfast)\b", lower):
             preferences.append("food_focused")
@@ -804,37 +930,115 @@ class DeterministicUnderstandingEngine(PlanningUnderstandingPort):
         return preferences
 
     @staticmethod
+    def _extract_requirements(text: str, preferences: list[str]) -> list[IntentRequirement]:
+        """The distinct experiences, vibes and preferences the user asked for.
+
+        Each is kept as a separate requirement rather than collapsed into one
+        broad activity list, so "local culture, historic streets, and craft food
+        markets" survives planning as three things to look for. A concept is
+        only recorded when the user actually used the words for it.
+        """
+        lower = text.lower()
+        found: list[IntentRequirement] = []
+        # "A craft food market" is a market request, not a lunch request. Bare
+        # "food" and "eat" only count as wanting to eat when the user did not
+        # pair them with a market, so browsing a market is not reported as a meal.
+        market_requested = bool(re.search(r"\bmarkets?\b|\bfood market\b", lower))
+
+        for requirement in REQUIREMENT_TAXONOMY:
+            # "Craft food market" already covers a plain market, so a generic
+            # market is not reported as a second thing the user asked for.
+            if requirement.slug == "local_market" and re.search(
+                REQUIREMENT_TRIGGERS["craft_food_market"][0]
+                + r"|" + REQUIREMENT_TRIGGERS["craft_food_market"][3],
+                lower,
+            ):
+                continue
+            if requirement.slug == "meal" and market_requested and not re.search(
+                r"\blunch\b|\bdinner\b|\bbreakfast\b|\bbrunch\b|\bmeals?\b|\brestaurants?\b",
+                lower,
+            ):
+                continue
+            for pattern in REQUIREMENT_TRIGGERS.get(requirement.slug, ()):
+                if re.search(pattern, lower):
+                    if requirement not in found:
+                        found.append(requirement)
+                    break
+
+        # A loose food request still means eating, unless a market already covers it.
+        if not market_requested and re.search(r"\bfood\b|\beat\b|\bhungry\b", lower):
+            meal = requirement_by_slug("meal")
+            if meal is not None and meal not in found:
+                found.append(meal)
+
+        # Preferences stated in the soft-preference vocabulary are requirements
+        # too, so "outdoor" and "family-friendly" are tracked as such.
+        joined_prefs = " ".join(preferences).lower().replace("_", " ")
+        for slug in ("outdoor", "family_friendly", "vegetarian"):
+            requirement = requirement_by_slug(slug)
+            if requirement is not None and requirement not in found:
+                if slug in joined_prefs or slug.replace("_", " ") in joined_prefs:
+                    found.append(requirement)
+
+        return found
+
+    @staticmethod
     def _extract_activity_types(
-        text: str, occasion: str | None, preferences: list[str]
+        text: str,
+        occasion: str | None,
+        preferences: list[str],
+        requirements: list[IntentRequirement],
     ) -> list[InformationCategory]:
         lower = text.lower()
         categories: list[InformationCategory] = []
 
+        # A specific experience the user asked for carries the categories that
+        # honestly cover it (e.g. historic streets -> culture, a market ->
+        # shopping). Seeding from that keeps a stated intent from being swapped
+        # for whatever happens to be easy to find.
+        for requirement in requirements:
+            for cat in requirement.related_categories:
+                if cat not in categories:
+                    categories.append(cat)
+
         if re.search(r"\b(?:food|eat|dinner|lunch|breakfast|brunch|tasting|drinks|cocktail|restaurant|cafe|coffee)\b", lower) or "food_focused" in preferences:
-            categories.append(InformationCategory.FOOD)
+            if InformationCategory.FOOD not in categories:
+                categories.append(InformationCategory.FOOD)
 
         if re.search(r"\b(?:walk|hike|park|garden|nature|beach|scenic)\b", lower) or "outdoors" in preferences:
-            categories.append(InformationCategory.NATURE)
+            if InformationCategory.NATURE not in categories:
+                categories.append(InformationCategory.NATURE)
 
         if re.search(r"\b(?:culture|cultural|history|museum|art|heritage|guided)\b", lower) or "cultural" in preferences:
-            categories.append(InformationCategory.CULTURE)
+            if InformationCategory.CULTURE not in categories:
+                categories.append(InformationCategory.CULTURE)
 
         if re.search(r"\b(?:movie|theatre|theater|show|music|live|comedy|entertainment)\b", lower):
-            categories.append(InformationCategory.ENTERTAINMENT)
+            if InformationCategory.ENTERTAINMENT not in categories:
+                categories.append(InformationCategory.ENTERTAINMENT)
 
         if re.search(r"\b(?:spa|massage|wellness|relax)\b", lower):
-            categories.append(InformationCategory.WELLNESS)
+            if InformationCategory.WELLNESS not in categories:
+                categories.append(InformationCategory.WELLNESS)
 
         if re.search(r"\b(?:market|shopping|mall|boutique)\b", lower):
-            categories.append(InformationCategory.SHOPPING)
+            if InformationCategory.SHOPPING not in categories:
+                categories.append(InformationCategory.SHOPPING)
 
-        if re.search(r"\b(?:fun|entertainment|activity|activities)\b", lower) or "fun" in preferences:
+        # Only when the user did NOT name a specific experience may "fun" /
+        # "activity" wording broaden to generic food/culture/nature. Once a real
+        # intent is on the table, those words must not substitute for it.
+        has_primary_experience = any(
+            req.kind is RequirementKind.EXPERIENCE for req in requirements
+        )
+
+        if (re.search(r"\b(?:fun|entertainment|activity|activities)\b", lower) or "fun" in preferences) and not has_primary_experience:
             for cat in (InformationCategory.FOOD, InformationCategory.NATURE, InformationCategory.CULTURE):
                 if cat not in categories:
                     categories.append(cat)
 
         # If date, social outing, or celebration and no explicit activity stated, food is natural default
-        if not categories and occasion in {"date", "friends", "casual_hangout", "birthday", "celebration", "family"}:
+        if not categories and not has_primary_experience and occasion in {"date", "friends", "casual_hangout", "birthday", "celebration", "family"}:
             categories.append(InformationCategory.FOOD)
 
         return categories

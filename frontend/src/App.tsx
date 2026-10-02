@@ -1,12 +1,16 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { StageFrame } from './components/StageFrame';
+import type { StageNumber } from './utils/stages';
 import { Navigation } from './components/Navigation';
 import { IntentInput } from './components/IntentInput';
 import type { IntentInputHandle } from './components/IntentInput';
 import { LandingStory } from './components/LandingStory';
 import { CapabilitiesSection } from './components/CapabilitiesSection';
-import { UnderstandingCard } from './components/UnderstandingCard';
 import { ProposedPlan } from './components/ProposedPlan';
+import type { PlanItemCandidateSelection, PlanConfirmMeta } from './components/ProposedPlan';
 import { PlanSummary } from './components/PlanSummary';
+import { PlanLibrary } from './components/PlanLibrary';
+import { Footer } from './components/Footer';
 import {
   createPlanFromIntent,
   getPlan,
@@ -14,6 +18,7 @@ import {
   addOptionToPlan,
   proposePlanAdaptation,
   applyPlanAdaptation,
+  updatePlan,
 } from './api/planning';
 import {
   buildProposedItinerary,
@@ -23,8 +28,15 @@ import {
 } from './utils/itineraryBuilder';
 import type { ProposedItinerary, ProposedItineraryItem } from './utils/itineraryBuilder';
 import type { DecisionCandidateRead, InformationCategory, PlanRead, PlanAdaptationRead } from './types/planning';
-import { IconSparkles, IconAlertCircle, IconX, IconArrowLeft, IconPlus } from './components/Icons';
+import { IconAlertCircle, IconX, IconArrowLeft, IconPlus } from './components/Icons';
+// The Dayform visual system layers on top of the original stylesheet: the
+// shared language first, then the M18 surfaces that use it.
 import './styles.css';
+import './styles/dayform.css';
+import './styles/surfaces.css';
+import './styles/cinematic.css';
+import './styles/scenes.css';
+import './styles/execution.css';
 
 export const App: React.FC = () => {
   const [currentPlan, setCurrentPlan] = useState<PlanRead | null>(null);
@@ -33,7 +45,36 @@ export const App: React.FC = () => {
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [submittedIntent, setSubmittedIntent] = useState<string>('');
 
-  const [viewMode, setViewMode] = useState<'landing' | 'workspace'>('landing');
+  const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'library'>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname === '/library') return 'library';
+      if (window.location.pathname === '/workspace') return 'workspace';
+    }
+    return 'landing';
+  });
+
+  const handleSwitchView = useCallback((mode: 'landing' | 'workspace' | 'library') => {
+    setViewMode(mode);
+    const targetPath = mode === 'library' ? '/library' : mode === 'workspace' ? '/workspace' : '/';
+    if (window.location.pathname !== targetPath) {
+      window.history.pushState(null, '', targetPath);
+    }
+  }, []);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname;
+      if (path === '/library') {
+        setViewMode('library');
+      } else if (path === '/workspace') {
+        setViewMode('workspace');
+      } else {
+        setViewMode('landing');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   const [isAdaptationReview, setIsAdaptationReview] = useState(false);
   const [proposedAdaptation, setProposedAdaptation] = useState<PlanAdaptationRead | null>(null);
@@ -46,23 +87,60 @@ export const App: React.FC = () => {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const intentInputRef = useRef<IntentInputHandle>(null);
-  const proposalRef = useRef<HTMLDivElement>(null);
+  // The story advances to a named scene rather than to a container, because a
+  // container now holds three of them and the reader should be taken to the
+  // one that has just been earned.
+  const moveToScene = useCallback((stage: StageNumber, delay = 120) => {
+    const selector = `.df-scene[data-stage="${String(stage).padStart(2, '0')}"]`;
 
-  // Flow Step 1: User submits an intention
-  const handleIntentSubmit = async (intent: string) => {
+    const go = () => {
+      const scene = document.querySelector(selector);
+      if (scene) scene.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+
+    // The scene is usually not in the document yet when a plan resolves, so
+    // wait for it rather than scrolling to nothing. Bounded, and it gives up
+    // rather than polling forever.
+    let attempts = 0;
+    const waitForScene = () => {
+      if (document.querySelector(selector)) {
+        go();
+        // A scene that has only just mounted is still growing: the traces and
+        // ledgers above it stagger in, which moves the target down the page
+        // after we have already scrolled to it. Land again once it has settled,
+        // so the payoff is what the reader is actually looking at.
+        setTimeout(go, 900);
+        return;
+      }
+      if (attempts < 80) {
+        attempts += 1;
+        setTimeout(waitForScene, 50);
+      }
+    };
+
+    setTimeout(waitForScene, delay);
+  }, []);
+
+  // Flow Step 1: User submits an intention (with optional origin, startTime, transportPreference)
+  const handleIntentSubmit = async (
+    intent: string,
+    origin?: string,
+    startTime?: string,
+    transportPreference?: string
+  ) => {
     setIsPlanning(true);
     setErrorMessage(null);
     setIsConfirmed(false);
     setProposedItinerary(null);
     setSubmittedIntent(intent);
-    setViewMode('workspace');
+    handleSwitchView('workspace');
 
     // Scroll cleanly to the workspace view
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
     try {
       // 1. Create plan aggregate from intent (POST /api/v1/planning/requests)
-      const plan = await createPlanFromIntent(intent);
+      const plan = await createPlanFromIntent(intent, origin, startTime, transportPreference);
       setCurrentPlan(plan);
 
       // 2. Fetch tailored recommendations (GET /api/v1/planning/plans/{id}/recommendations)
@@ -82,10 +160,8 @@ export const App: React.FC = () => {
       const proposal = buildProposedItinerary(allRecs, budgetMax, intent, groupSize, plan.understanding, recsResponse.trade_off_summary);
       setProposedItinerary(proposal);
 
-      // Smooth scroll to proposal section
-      setTimeout(() => {
-        proposalRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 150);
+      // The itinerary is the payoff, so that is where the reader arrives.
+      moveToScene(4, 150);
     } catch (err: unknown) {
       console.error('Planning error:', err);
       const msg = err instanceof Error ? err.message : 'Failed to create plan.';
@@ -184,9 +260,7 @@ export const App: React.FC = () => {
       setIsAdaptationReview(true);
       setIsConfirmed(false);
 
-      setTimeout(() => {
-        proposalRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }, 100);
+      moveToScene(4, 100);
     } catch (err: unknown) {
       console.error('Error adapting plan:', err);
       const msg = err instanceof Error ? err.message : 'Failed to adapt plan.';
@@ -208,10 +282,7 @@ export const App: React.FC = () => {
       setIsAdaptationReview(false);
       setProposedAdaptation(null);
       setIsConfirmed(true);
-
-      setTimeout(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }, 100);
+      moveToScene(6, 100);
     } catch (err: unknown) {
       console.error('Error applying adaptation:', err);
       const msg = err instanceof Error ? err.message : 'Failed to apply changes.';
@@ -234,16 +305,55 @@ export const App: React.FC = () => {
   };
 
   // Flow Step 2: User confirms the proposed itinerary ("Looks good")
-  const handleConfirmPlan = async (selectedCandidates: DecisionCandidateRead[]) => {
+  const handleConfirmPlan = async (
+    selectedCandidates: DecisionCandidateRead[],
+    scheduledItems?: PlanItemCandidateSelection[],
+    meta?: PlanConfirmMeta,
+    customTitle?: string
+  ) => {
     if (!currentPlan) return;
 
     setIsSaving(true);
     setErrorMessage(null);
 
     try {
-      // Persist each selected candidate to the authoritative backend plan
-      for (const candidate of selectedCandidates) {
-        await addOptionToPlan(currentPlan.id, candidate);
+      if (customTitle && customTitle.trim() && customTitle.trim() !== currentPlan.title) {
+        try {
+          await updatePlan(currentPlan.id, {
+            title: customTitle.trim(),
+          });
+        } catch (titleErr) {
+          console.warn('Failed to persist custom title:', titleErr);
+        }
+      }
+
+      if (meta?.origin || meta?.transportPreference) {
+        try {
+          await updatePlan(currentPlan.id, {
+            context: {
+              origin: meta.origin || undefined,
+              transport_mode: meta.transportPreference || undefined,
+            },
+          });
+        } catch (ctxErr) {
+          console.warn('Failed to persist origin/transport preference to plan context:', ctxErr);
+        }
+      }
+      if (scheduledItems && scheduledItems.length > 0) {
+        for (const item of scheduledItems) {
+          await addOptionToPlan(
+            currentPlan.id,
+            item.candidate,
+            item.position,
+            item.startTime,
+            item.endTime
+          );
+        }
+      } else {
+        // Persist each selected candidate to the authoritative backend plan
+        for (const candidate of selectedCandidates) {
+          await addOptionToPlan(currentPlan.id, candidate);
+        }
       }
 
       // Refresh plan from database (GET /api/v1/planning/plans/{plan_id})
@@ -251,16 +361,58 @@ export const App: React.FC = () => {
       setCurrentPlan(refreshed);
       setIsConfirmed(true);
 
-      // Smooth scroll to confirmed plan
-      setTimeout(() => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      }, 100);
+      // The saved day is the last scene; go there rather than to the top.
+      moveToScene(6, 100);
     } catch (err: unknown) {
       console.error('Error confirming plan:', err);
       const msg = err instanceof Error ? err.message : 'Failed to save plan.';
       setErrorMessage(msg);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleOpenSavedPlan = async (planId: string) => {
+    setIsPlanning(true);
+    setErrorMessage(null);
+    try {
+      const plan = await getPlan(planId);
+      setCurrentPlan(plan);
+      setSubmittedIntent(plan.intention || plan.title || 'Saved plan');
+
+      const recsResponse = await getPlanRecommendations(plan.id);
+      const allRecs = recsResponse.candidates || [];
+      setCandidates(allRecs);
+
+      const budgetConstraint = plan.constraints?.find((c) => c.type === 'budget_max');
+      const budgetMax = budgetConstraint?.numeric_value
+        ? parseFloat(String(budgetConstraint.numeric_value))
+        : null;
+      const groupSize = plan.context?.group_size || 1;
+
+      const proposal = buildProposedItinerary(
+        allRecs,
+        budgetMax,
+        plan.intention,
+        groupSize,
+        plan.understanding,
+        recsResponse.trade_off_summary
+      );
+      setProposedItinerary(proposal);
+
+      if (plan.items && plan.items.length > 0) {
+        setIsConfirmed(true);
+      } else {
+        setIsConfirmed(false);
+      }
+
+      handleSwitchView('workspace');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      console.error('Failed to open saved plan:', err);
+      setErrorMessage('Could not open the selected plan.');
+    } finally {
+      setIsPlanning(false);
     }
   };
 
@@ -273,13 +425,14 @@ export const App: React.FC = () => {
     setProposedAdaptation(null);
     setErrorMessage(null);
     setSubmittedIntent('');
-    setViewMode('landing');
+    handleSwitchView('landing');
+    intentInputRef.current?.reset?.();
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleFocusHeroInput = () => {
-    if (viewMode === 'workspace') {
-      setViewMode('landing');
+    if (viewMode !== 'landing') {
+      handleSwitchView('landing');
       setTimeout(() => {
         intentInputRef.current?.focus();
       }, 100);
@@ -295,8 +448,20 @@ export const App: React.FC = () => {
 
   const hasActivePlan = Boolean(currentPlan || isPlanning);
 
+
+
   return (
     <div className={`product-canvas ${viewMode === 'workspace' ? 'workspace-canvas' : ''}`}>
+      {/* Decorative ambient emoji layer removed for clean editorial presentation */}
+
+      {/* The running folio: six scenes, always in the same order.
+
+          It stays out of the way on the landing screen, which already tells the
+          same six-stage story in the user's own words. The folio is for people
+          who are actually inside the day — it appears the moment the story
+          starts, and from then on it is the only place the six stages are named,
+      {/* The running folio (StageRail) omitted from workspace to preserve focused consumer UX */}
+
       {/* Top Floating Navigation */}
       <Navigation
         hasActivePlan={hasActivePlan}
@@ -304,7 +469,7 @@ export const App: React.FC = () => {
         onNewPlan={handleStartNew}
         onFocusInput={handleFocusHeroInput}
         viewMode={viewMode}
-        onSwitchView={(mode) => setViewMode(mode)}
+        onSwitchView={handleSwitchView}
       />
 
       {/* Main Experience Flow */}
@@ -335,7 +500,7 @@ export const App: React.FC = () => {
             {/* Active Plan Resumption Banner (if user navigated to overview while a plan is active) */}
             {hasActivePlan && (
               <div className="landing-banner-wrap">
-                <div className="active-plan-banner" onClick={() => setViewMode('workspace')}>
+                <div className="active-plan-banner" onClick={() => handleSwitchView('workspace')}>
                   <div className="active-plan-banner-text">
                     <span className="live-status-dot" />
                     <span>You have an active plan in progress: <strong>“{submittedIntent}”</strong></span>
@@ -360,42 +525,6 @@ export const App: React.FC = () => {
 
             {/* Engine Architecture & Capabilities Grid */}
             <CapabilitiesSection onStartPlanning={handleFocusHeroInput} />
-
-            {/* Editorial Footer */}
-            <footer className="editorial-footer">
-              <div className="footer-container">
-                <div className="footer-top-row">
-                  <div className="footer-brand-col">
-                    <span className="footer-logo">DAYFORM</span>
-                    <p className="footer-tagline">
-                      Intelligent real-world planning. Give shape to your day.
-                    </p>
-                  </div>
-
-                  <div className="footer-links-col">
-                    <span className="footer-col-title">Navigation</span>
-                    <button type="button" className="footer-link" onClick={handleFocusHeroInput}>Plan an intention</button>
-                    <a href="#how-it-works" className="footer-link">How it works</a>
-                    <a href="#capabilities" className="footer-link">Capabilities</a>
-                  </div>
-
-                  <div className="footer-links-col">
-                    <span className="footer-col-title">Engine</span>
-                    <span className="footer-meta-item">Version 0.1.0</span>
-                    <span className="footer-meta-item">Adaptive Sequencing</span>
-                    <span className="footer-meta-item">Live Intelligence Active</span>
-                  </div>
-                </div>
-
-                <div className="footer-bottom-row">
-                  <span className="footer-copy">© 2026 Dayform. Built with verified places and real-world logic.</span>
-                  <div className="footer-system-status">
-                    <span className="live-status-dot" />
-                    <span>All services operational</span>
-                  </div>
-                </div>
-              </div>
-            </footer>
           </div>
         )}
 
@@ -404,24 +533,25 @@ export const App: React.FC = () => {
             ========================================================================= */}
         {viewMode === 'workspace' && (
           <div className="workspace-view-container animate-fade-in">
-            {/* Workspace Top Action Bar / Context Header */}
-            <div className="workspace-top-bar">
+            {/* The intention stays on screen for the whole workspace, because
+                every scene below is an answer to it. It is held at the meta
+                scale so it informs without competing. */}
+            <div className="workspace-top-bar df-workspace-margin">
               <button
                 type="button"
                 className="workspace-back-btn"
-                onClick={() => setViewMode('landing')}
-                title="Return to the overview"
+                onClick={() => handleSwitchView('landing')}
+                title="Back to the beginning"
               >
                 <IconArrowLeft size={15} />
-                <span>Overview</span>
+                <span>Back</span>
               </button>
 
-              <div className="workspace-intent-display">
-                <span className="intent-display-badge">INTENTION</span>
+              <p className="workspace-intent-display">
                 <span className="intent-display-text" title={submittedIntent}>
                   “{submittedIntent}”
                 </span>
-              </div>
+              </p>
 
               <button
                 type="button"
@@ -435,32 +565,34 @@ export const App: React.FC = () => {
             </div>
 
             {/* Assembling / Thinking State (Phase 9) */}
+            {/* Scene 03, while it is happening. The steps named here are the
+                ones the engine is genuinely running, in the order it runs them,
+                so this is a caption on real work rather than a reassuring
+                animation. Nothing is claimed that is not about to be shown. */}
             {isPlanning && (
-              <div className="thinking-stage-container animate-fade-in">
-                <div className="thinking-pulse-core">
-                  <IconSparkles size={28} className="thinking-sparkle" />
-                </div>
-                <h3 className="thinking-title">Giving shape to your day</h3>
-                <p className="thinking-subtitle">
-                  Evaluating verified local spots, checking live operating hours, and balancing your budget to build a coherent sequence.
-                </p>
-                <div className="thinking-step-row">
-                  <div className="thinking-step-item">
-                    <span className="step-indicator done">✓</span>
-                    <span>Understanding intent</span>
-                  </div>
-                  <span className="thinking-sep">→</span>
-                  <div className="thinking-step-item">
-                    <span className="step-indicator pulse">●</span>
-                    <span>Verifying places</span>
-                  </div>
-                  <span className="thinking-sep">→</span>
-                  <div className="thinking-step-item">
-                    <span className="step-indicator pulse">●</span>
-                    <span>Sequencing your day</span>
-                  </div>
-                </div>
-              </div>
+              <StageFrame
+                stage={3}
+                className="df-thinking-scene"
+                title="One moment."
+                lede="Reading what you actually meant, then checking it against what is really open, really there, and really within reach."
+              >
+                <ol className="df-thinking-steps">
+                  {[
+                    { n: '01', t: 'Reading the intention', d: 'Pulling out the time, the place, the people, the money and the mood.' },
+                    { n: '02', t: 'Finding real places', d: 'Searching what is genuinely nearby and genuinely open.' },
+                    { n: '03', t: 'Checking them against you', d: 'Hours, area, budget and what you asked for, one by one.' },
+                    { n: '04', t: 'Putting them in order', d: 'Working out the travel between each one, then building the day around it.' },
+                  ].map((step) => (
+                    <li key={step.n} className="df-thinking-step">
+                      <span className="df-thinking-step-n">{step.n}</span>
+                      <span className="df-thinking-step-body">
+                        <span className="df-thinking-step-t">{step.t}</span>
+                        <span className="df-thinking-step-d">{step.d}</span>
+                      </span>
+                    </li>
+                  ))}
+                </ol>
+              </StageFrame>
             )}
 
             {/* Error Recovery State in Workspace (Phase 9) */}
@@ -483,12 +615,7 @@ export const App: React.FC = () => {
 
             {/* Proposed Plan Stage */}
             {!isPlanning && currentPlan && proposedItinerary && !isConfirmed && (
-              <div ref={proposalRef} className="proposal-stage-container animate-fade-in">
-                <UnderstandingCard
-                  plan={currentPlan}
-                  budgetMax={budgetMax}
-                />
-
+              <div className="proposal-stage-container animate-fade-in">
                 <ProposedPlan
                   key={`${currentPlan.id}-${currentPlan.updated_at || ''}-${proposedItinerary.estimatedTotal}-${isAdaptationReview ? 'review' : 'normal'}`}
                   plan={currentPlan}
@@ -519,9 +646,28 @@ export const App: React.FC = () => {
                 />
               </div>
             )}
+
+          </div>
+        )}
+
+        {/* =========================================================================
+            VIEW MODE 3: PLAN LIBRARY
+            ========================================================================= */}
+        {viewMode === 'library' && (
+          <div className="library-view-container animate-fade-in">
+            <PlanLibrary
+              onOpenPlan={handleOpenSavedPlan}
+              onNewPlan={handleStartNew}
+            />
           </div>
         )}
       </main>
+
+      {/* Edge-to-Edge Solid Black Editorial Footer */}
+      <Footer
+        onStartPlanning={viewMode === 'landing' ? handleFocusHeroInput : handleStartNew}
+        onOpenLibrary={() => handleSwitchView('library')}
+      />
     </div>
   );
 };

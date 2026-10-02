@@ -10,6 +10,7 @@ from app.application.planning.dtos import ConstraintInput, CreatePlanData, PlanI
 from app.application.planning.errors import PlanItemNotFoundError, PlanningNotFoundError
 from app.application.planning.ports import PlanRepository
 from app.application.planning.understanding_service import DeterministicUnderstandingEngine
+from app.domain.entities.planning.areas import resolve_area_scope
 from app.domain.entities.planning.constraint import Constraint, ConstraintType
 from app.domain.entities.planning.context import PlanningContext
 from app.domain.entities.planning.plan import Plan
@@ -51,6 +52,7 @@ class PlanningService:
                 end_time=context_data.get("end_time", current.end_time),
                 group_size=context_data.get("group_size", current.group_size),
                 transport_mode=context_data.get("transport_mode", current.transport_mode),
+                origin=context_data.get("origin", current.origin),
             ))
         if "constraints" in changes:
             constraints: list[ConstraintInput] = changes["constraints"]
@@ -164,6 +166,15 @@ class PlanningService:
                     value=f"descriptor:{desc}",
                 )
             )
+        # Each distinct thing the user asked for is persisted individually, so a
+        # later planning pass can still tell whether it was actually covered.
+        for requirement in understanding.experience_requirements:
+            constraints.append(
+                ConstraintInput(
+                    type=ConstraintType.REQUIREMENT,
+                    value=f"requirement:{requirement}",
+                )
+            )
         if understanding.setting_preference:
             constraints.append(
                 ConstraintInput(
@@ -171,6 +182,18 @@ class PlanningService:
                     value=f"setting:{understanding.setting_preference}",
                 )
             )
+        # A stated area is a hard geographic constraint, not a label on the plan.
+        # An inferred or defaulted city places no constraint, so nothing is
+        # recorded and the whole city stays eligible.
+        if not understanding.location_is_inferred:
+            area = resolve_area_scope(understanding.location)
+            if area is not None:
+                constraints.append(
+                    ConstraintInput(
+                        type=ConstraintType.REQUIREMENT,
+                        value=f"area:{area.label}",
+                    )
+                )
         if understanding.weather_context:
             constraints.append(
                 ConstraintInput(
@@ -253,6 +276,7 @@ class PlanningService:
                 end_time=end_dt,
                 group_size=group_size,
                 transport_mode=understanding.transport_mode,
+                origin=understanding.origin,
                 constraints=constraints,
             )
         )
@@ -461,7 +485,7 @@ def _generate_plan_title(understanding: PlanningUnderstanding) -> str:
 
 def _context_from_data(plan_id: UUID, data: CreatePlanData) -> PlanningContext:
     return PlanningContext(plan_id=plan_id, location=data.location, start_time=data.start_time, end_time=data.end_time,
-                           group_size=data.group_size, transport_mode=data.transport_mode)
+                           group_size=data.group_size, transport_mode=data.transport_mode, origin=data.origin)
 
 
 def _constraints_from_inputs(plan_id: UUID, inputs: list[ConstraintInput]) -> list[Constraint]:
@@ -489,6 +513,11 @@ def _resolve_iso_datetime(date_str: str | None, time_str: str | None) -> datetim
     }
     base_year, base_month, base_day = 2026, 9, 21  # 2026-09-21 was Monday
     if date_str:
+        try:
+            dt = datetime.strptime(date_str.strip(), "%Y-%m-%d")
+            return datetime(dt.year, dt.month, dt.day, hour, minute)
+        except Exception:
+            pass
         clean_date = date_str.lower().strip()
         offset = weekday_offsets.get(clean_date)
         if offset is not None:

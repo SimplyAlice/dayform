@@ -91,16 +91,22 @@ export const LandingStory: React.FC<LandingStoryProps> = ({ onStartPlanning }) =
 
   useEffect(() => {
     const handleScrollObserver = () => {
-      const scrollY = window.scrollY;
       const viewportHeight = window.innerHeight;
-      const triggerPoint = scrollY + viewportHeight * 0.45;
+      const triggerPoint = viewportHeight * 0.45;
 
       let currentActive = 0;
+      let minDistance = Infinity;
+
       chapterRefs.current.forEach((el, index) => {
         if (!el) return;
         const rect = el.getBoundingClientRect();
-        const elementTop = rect.top + scrollY;
-        if (triggerPoint >= elementTop) {
+        const elCenter = rect.top + rect.height / 2;
+        const dist = Math.abs(elCenter - triggerPoint);
+        if (rect.top <= triggerPoint && rect.bottom >= triggerPoint) {
+          currentActive = index;
+          minDistance = -1;
+        } else if (minDistance !== -1 && dist < minDistance) {
+          minDistance = dist;
           currentActive = index;
         }
       });
@@ -115,6 +121,7 @@ export const LandingStory: React.FC<LandingStoryProps> = ({ onStartPlanning }) =
   }, []);
 
   const scrollToChapter = (index: number) => {
+    setActiveStep(index);
     const target = chapterRefs.current[index];
     if (target) {
       const navOffset = 90;
@@ -187,6 +194,35 @@ export const LandingStory: React.FC<LandingStoryProps> = ({ onStartPlanning }) =
                   <span className="takeaway-bullet">→</span>
                   <span className="takeaway-text">{chapter.keyTakeaway}</span>
                 </div>
+
+                <div className="chapter-step-nav-row">
+                  {index > 0 && (
+                    <button
+                      type="button"
+                      className="btn-story-step prev"
+                      onClick={() => scrollToChapter(index - 1)}
+                    >
+                      ← {CHAPTERS[index - 1].tag}
+                    </button>
+                  )}
+                  {index < CHAPTERS.length - 1 ? (
+                    <button
+                      type="button"
+                      className="btn-story-step next"
+                      onClick={() => scrollToChapter(index + 1)}
+                    >
+                      Next: {CHAPTERS[index + 1].tag} →
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn-story-step cta"
+                      onClick={() => onStartPlanning()}
+                    >
+                      Plan your day now →
+                    </button>
+                  )}
+                </div>
               </div>
             ))}
           </div>
@@ -207,8 +243,28 @@ export const LandingStory: React.FC<LandingStoryProps> = ({ onStartPlanning }) =
                   <span className="stage-pulse-dot" />
                   <span>Dayform · {CHAPTERS[activeStep].tag}</span>
                 </div>
-                <div className="stage-step-tag">
-                  0{activeStep + 1} / 06
+                <div className="stage-step-controls">
+                  <button
+                    type="button"
+                    className="stage-step-btn"
+                    onClick={() => activeStep > 0 && scrollToChapter(activeStep - 1)}
+                    disabled={activeStep === 0}
+                    aria-label="Previous scene"
+                  >
+                    ‹
+                  </button>
+                  <span className="stage-step-tag">
+                    0{activeStep + 1} / 06
+                  </span>
+                  <button
+                    type="button"
+                    className="stage-step-btn"
+                    onClick={() => activeStep < CHAPTERS.length - 1 && scrollToChapter(activeStep + 1)}
+                    disabled={activeStep === CHAPTERS.length - 1}
+                    aria-label="Next scene"
+                  >
+                    ›
+                  </button>
                 </div>
               </div>
 

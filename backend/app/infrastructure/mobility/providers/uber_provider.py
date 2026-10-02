@@ -17,7 +17,11 @@ from app.domain.entities.mobility.models import (
     ProviderCapability,
 )
 from app.domain.ports.mobility.ports import MobilityProviderPort
-from app.infrastructure.mobility.geo import estimate_network_distance_km, find_coordinates
+from app.infrastructure.mobility.geo import (
+    estimate_network_distance_km,
+    find_coordinates,
+    is_in_cape_town_service_area,
+)
 
 
 def build_uber_deeplink(
@@ -71,6 +75,14 @@ class UberProvider(MobilityProviderPort):
         )
 
     async def get_options(self, requirement: MobilityRequirement) -> list[MobilityOption]:
+        # Uber does not operate everywhere, so a journey outside the service area is
+        # not offered rather than offered optimistically. Answering unconditionally
+        # would make Uber the last surviving option on every leg.
+        if not is_in_cape_town_service_area(
+            requirement.origin
+        ) or not is_in_cape_town_service_area(requirement.destination):
+            return []
+
         distance_km = estimate_network_distance_km(
             requirement.origin,
             requirement.destination,

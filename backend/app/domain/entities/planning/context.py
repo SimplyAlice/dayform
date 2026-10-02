@@ -11,6 +11,7 @@ class PlanningContext:
     end_time: datetime | None = None
     group_size: int = 1
     transport_mode: str | None = None
+    origin: str | None = None
 
     def __post_init__(self) -> None:
         if self.group_size < 1:

@@ -25,6 +25,7 @@ class CreatePlanData:
     end_time: datetime | None = None
     group_size: int = 1
     transport_mode: str | None = None
+    origin: str | None = None
     constraints: list[ConstraintInput] | None = None
 
 

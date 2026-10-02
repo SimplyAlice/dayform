@@ -5,6 +5,8 @@ import type {
   ExecutionActionType,
   ExecutionResultRead,
   ItineraryFeasibilityRead,
+  OrchestratedPlanRead,
+  OrchestrateStopInput,
   PlanActionsRead,
   PlanAdaptationRead,
   PlanHealthCheckRead,
@@ -19,8 +21,18 @@ import type {
  * Creates a structured plan from a free-text intention.
  * Endpoint: POST /api/v1/planning/requests
  */
-export async function createPlanFromIntent(request: string): Promise<PlanRead> {
-  const body: CreatePlanFromIntentRequest = { request };
+export async function createPlanFromIntent(
+  request: string,
+  origin?: string,
+  startTime?: string,
+  transportPreference?: string
+): Promise<PlanRead> {
+  const body: CreatePlanFromIntentRequest = {
+    request,
+    ...(origin && origin.trim() ? { origin: origin.trim() } : {}),
+    ...(startTime && startTime.trim() ? { start_time: startTime.trim() } : {}),
+    ...(transportPreference && transportPreference.trim() ? { transport_preference: transportPreference.trim() } : {}),
+  };
   return apiClient<PlanRead>('/planning/requests', {
     method: 'POST',
     body: JSON.stringify(body),
@@ -237,6 +249,38 @@ export interface ProposedStopInput {
 }
 
 /**
+ * Produces a complete, transport-aware plan before the user confirms it.
+ * Endpoint: POST /api/v1/planning/plans/{plan_id}/orchestrate
+ *
+ * Transport is evaluated first and folded into the returned schedule, so the
+ * caller never has to re-derive times or attach mobility after the fact.
+ */
+export async function orchestratePlan(
+  planId: string,
+  stops: OrchestrateStopInput[],
+  origin?: string | null,
+  preferredModes?: string[],
+  partySize?: number | null,
+  preferredProvider?: string | null,
+  selectedLegOptions?: Record<number, string> | null
+): Promise<OrchestratedPlanRead> {
+  return apiClient<OrchestratedPlanRead>(
+    `/planning/plans/${planId}/orchestrate`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        stops,
+        origin: origin && origin.trim() ? origin.trim() : null,
+        preferred_modes: preferredModes && preferredModes.length ? preferredModes : null,
+        party_size: partySize ?? null,
+        preferred_provider: preferredProvider && preferredProvider.trim() ? preferredProvider.trim() : null,
+        selected_leg_options: selectedLegOptions || null,
+      }),
+    }
+  );
+}
+
+/**
  * Evaluates mobility across a proposed itinerary before the plan is saved.
  * Endpoint: POST /api/v1/planning/plans/{plan_id}/transitions/proposed
  */
@@ -263,5 +307,39 @@ export async function evaluateProposedTransitions(
       }),
     }
   );
+}
+
+/**
+ * Updates a plan's details or context (e.g. origin, transport mode, title).
+ * Endpoint: PATCH /api/v1/planning/plans/{plan_id}
+ */
+export async function updatePlan(
+  planId: string,
+  changes: {
+    title?: string;
+    status?: string;
+    intention?: string;
+    context?: {
+      location?: string;
+      start_time?: string;
+      end_time?: string;
+      group_size?: number;
+      transport_mode?: string;
+      origin?: string;
+    };
+  }
+): Promise<PlanRead> {
+  return apiClient<PlanRead>(`/planning/plans/${planId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(changes),
+  });
+}
+
+/**
+ * Lists all saved plans for the authenticated user.
+ * Endpoint: GET /api/v1/planning/plans
+ */
+export async function listPlans(): Promise<PlanRead[]> {
+  return apiClient<PlanRead[]>('/planning/plans');
 }
 

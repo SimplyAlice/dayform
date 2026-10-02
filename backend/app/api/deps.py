@@ -41,6 +41,8 @@ from app.application.planning.execution_service import PlanExecutionService
 from app.application.planning.information import PlanningInformationService
 from app.application.planning.intent_interpreter import IntentInterpreter
 from app.application.planning.live_intelligence_service import LiveIntelligenceService
+from app.application.planning.mobility_planning_service import MobilityPlanningService
+from app.application.planning.orchestration_service import ItineraryOrchestrator
 from app.application.planning.planning_service import PlanningService
 from app.application.planning.ports import PlanningInformationProvider, PlanningUnderstandingPort, PlanRepository
 from app.application.planning.selection_service import PlanSelectionService
@@ -423,9 +425,13 @@ def get_mobility_planning_service(
     mobility_service: Annotated[MobilityService, Depends(get_mobility_service)],
     live_mobility_service: Annotated["LiveMobilityService", Depends(get_live_mobility_service)],
 ) -> MobilityPlanningService:
-    from app.application.planning.mobility_planning_service import MobilityPlanningService
-
     return MobilityPlanningService(mobility_service, live_mobility_service)
+
+
+def get_itinerary_orchestrator(
+    mobility_planning_service: Annotated[MobilityPlanningService, Depends(get_mobility_planning_service)],
+) -> ItineraryOrchestrator:
+    return ItineraryOrchestrator(mobility_planning_service)
 
 
 _default_live_status_registry: LiveStatusRegistry | None = None

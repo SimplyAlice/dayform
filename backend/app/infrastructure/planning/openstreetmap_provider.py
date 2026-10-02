@@ -23,6 +23,7 @@ from uuid import UUID
 
 from app.application.planning.information import OptionSearchCriteria
 from app.application.planning.ports import PlanningInformationProvider
+from app.domain.entities.planning.areas import AreaStatus, classify_in_area, resolve_area_scope
 from app.domain.entities.planning.information import (
     Activity,
     FreshnessKind,
@@ -34,6 +35,28 @@ from app.domain.entities.planning.information import (
 logger = logging.getLogger(__name__)
 
 OSM_ATTRIBUTION = "© OpenStreetMap contributors"
+
+NON_VENUE_CLASSES = frozenset(
+    {"boundary", "place", "highway", "waterway", "natural", "landuse", "administrative"}
+)
+NON_VENUE_TYPES = frozenset(
+    {
+        "suburb",
+        "neighbourhood",
+        "city",
+        "town",
+        "postcode",
+        "residential",
+        "administrative",
+        "state",
+        "country",
+        "political",
+        "village",
+        "hamlet",
+        "isolated_dwelling",
+        "quarter",
+    }
+)
 
 
 # --- Authoritative Real-World Cape Town Catalog --------------------------------
@@ -426,6 +449,459 @@ PLACES_CATALOG: tuple[Place, ...] = (
         verified_at="2026-09",
         source_url="https://ozcf.co.za/market-day/",
     ),
+
+    # --- OBSERVATORY -----------------------------------------------------------
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000020"),
+        name="Ground Art Caffe",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Micro-roastery and artisan coffee cafe featuring rotating local art exhibitions and freshly baked pastries in Observatory.",
+        price_from=Decimal("45"),
+        opening_hours="Mon-Sat 07:00-16:00, Sun 08:00-14:00",
+        minimum_group_size=1,
+        maximum_group_size=6,
+        source="openstreetmap",
+        address="269 Lower Main Rd, Observatory, Cape Town",
+        latitude=-33.9372,
+        longitude=18.4718,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://groundartcaffe.co.za/",
+        phone="+27 21 448 6030",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000021"),
+        name="Obz Books",
+        location="Cape Town",
+        category=InformationCategory.SHOPPING,
+        description="Quirky independent second-hand bookstore in the heart of Observatory stocked with literature, philosophy, and rare South African prints.",
+        price_from=Decimal("0"),
+        opening_hours="Mon-Sat 09:00-17:00",
+        minimum_group_size=1,
+        maximum_group_size=8,
+        source="openstreetmap",
+        address="77 Lower Main Rd, Observatory, Cape Town",
+        latitude=-33.9388,
+        longitude=18.4705,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.facebook.com/obzbooks/",
+        phone="+27 21 447 7019",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000022"),
+        name="A Touch of Madness",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Victorian house turned community gastropub and cultural bar with craft beers, street food dining, and garden seating in Observatory.",
+        price_from=Decimal("120"),
+        opening_hours="Tue-Sat 12:00-23:00, Sun 12:00-18:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="12 Nuttall Rd, Observatory, Cape Town",
+        latitude=-33.9358,
+        longitude=18.4735,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://atouchofmadness.co.za/",
+        phone="+27 21 447 4650",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000023"),
+        name="Starlings Local Cafe",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Neighbourhood cafe offering specialty pour-over coffee, wholesome breakfasts, and leafy outdoor courtyard tables in Observatory.",
+        price_from=Decimal("55"),
+        opening_hours="Mon-Fri 07:30-16:00, Sat 08:00-14:00",
+        minimum_group_size=1,
+        maximum_group_size=6,
+        source="openstreetmap",
+        address="94 Lower Main Rd, Observatory, Cape Town",
+        latitude=-33.9381,
+        longitude=18.4710,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://starlingscafe.co.za/",
+        phone="+27 21 447 9820",
+    ),
+
+    # --- WOODSTOCK -------------------------------------------------------------
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000024"),
+        name="Goodman Gallery Cape Town",
+        location="Cape Town",
+        category=InformationCategory.CULTURE,
+        description="Premier contemporary art gallery in Woodstock representing prominent African and international artists working across sculpture, painting, and installation.",
+        price_from=Decimal("0"),
+        opening_hours="Tue-Fri 09:30-17:30, Sat 09:30-16:00",
+        minimum_group_size=1,
+        maximum_group_size=12,
+        source="openstreetmap",
+        address="176 Sir Lowry Rd, Woodstock, Cape Town",
+        latitude=-33.9298,
+        longitude=18.4468,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.goodman-gallery.com/",
+        phone="+27 21 462 7573",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000025"),
+        name="Stevenson Gallery",
+        location="Cape Town",
+        category=InformationCategory.CULTURE,
+        description="Internationally renowned contemporary gallery in Buchanan Square displaying solo and group exhibitions from leading African and global artists.",
+        price_from=Decimal("0"),
+        opening_hours="Mon-Fri 09:00-17:00, Sat 10:00-13:00",
+        minimum_group_size=1,
+        maximum_group_size=12,
+        source="openstreetmap",
+        address="160 Sir Lowry Rd, Buchanan Square, Woodstock, Cape Town",
+        latitude=-33.9294,
+        longitude=18.4455,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.stevenson.info/",
+        phone="+27 21 462 1500",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000026"),
+        name="Woodstock Exchange",
+        location="Cape Town",
+        category=InformationCategory.SHOPPING,
+        description="Multi-story creative hub and design mall housing local artisan boutiques, fashion designers, artist workshops, and specialty cafes.",
+        price_from=Decimal("0"),
+        opening_hours="Mon-Fri 08:00-17:30, Sat 08:30-14:00",
+        minimum_group_size=1,
+        maximum_group_size=15,
+        source="openstreetmap",
+        address="66 Albert Rd, Woodstock, Cape Town",
+        latitude=-33.9278,
+        longitude=18.4502,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://woodstockexchange.co.za/",
+        phone="+27 21 447 7780",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000027"),
+        name="Rosetta Roastery",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Award-winning artisanal single-origin specialty coffee roastery and tasting room inside the Woodstock Exchange.",
+        price_from=Decimal("45"),
+        opening_hours="Mon-Fri 08:00-16:00, Sat 09:00-13:00",
+        minimum_group_size=1,
+        maximum_group_size=6,
+        source="openstreetmap",
+        address="66 Albert Rd, Woodstock Exchange, Woodstock, Cape Town",
+        latitude=-33.9278,
+        longitude=18.4502,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.rosettaroastery.com/",
+        phone="+27 21 447 4099",
+    ),
+
+    # --- CITY BOWL & GARDENS ---------------------------------------------------
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000028"),
+        name="Clarke's Bar & Dining Room",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Bustling downtown diner and cocktail bar serving gourmet burgers, all-day brunch, natural wines, and evening dinner on Bree Street.",
+        price_from=Decimal("120"),
+        opening_hours="Mon-Fri 07:00-22:00, Sat 08:00-22:00, Sun 08:00-15:00",
+        minimum_group_size=1,
+        maximum_group_size=8,
+        source="openstreetmap",
+        address="133 Bree St, City Bowl, Cape Town",
+        latitude=-33.9235,
+        longitude=18.4172,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://clarkesdining.co.za/",
+        phone="+27 87 470 0165",
+        reservation_url="https://clarkesdining.co.za/bookings",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000029"),
+        name="The Book Lounge",
+        location="Cape Town",
+        category=InformationCategory.SHOPPING,
+        description="Iconic independent bookshop and basement coffee lounge in the City Bowl hosting literary events, poetry readings, and curated fiction.",
+        price_from=Decimal("0"),
+        opening_hours="Mon-Fri 08:30-18:00, Sat 09:00-16:00, Sun 10:00-16:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="71 Roeland St, City Bowl, Cape Town",
+        latitude=-33.9290,
+        longitude=18.4239,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://booklounge.co.za/",
+        phone="+27 21 462 2425",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000030"),
+        name="Honest Chocolate Cafe",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Artisan bean-to-bar raw chocolate parlor and courtyard cafe serving truffles, hot chocolate, and chocolate desserts in the City Bowl.",
+        price_from=Decimal("50"),
+        opening_hours="Daily 09:00-18:00",
+        minimum_group_size=1,
+        maximum_group_size=6,
+        source="openstreetmap",
+        address="64A Wale St, City Bowl, Cape Town",
+        latitude=-33.9221,
+        longitude=18.4179,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://honestchocolate.co.za/",
+        phone="+27 76 765 8306",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000031"),
+        name="The Gin Bar",
+        location="Cape Town",
+        category=InformationCategory.ENTERTAINMENT,
+        description="Speakeasy gin cocktail bar hidden behind Honest Chocolate courtyard, specializing in South African craft botanicals and tonics.",
+        price_from=Decimal("95"),
+        opening_hours="Mon-Wed 17:00-00:00, Thu-Sat 16:00-01:00",
+        minimum_group_size=1,
+        maximum_group_size=8,
+        source="openstreetmap",
+        address="64A Wale St, City Bowl, Cape Town",
+        latitude=-33.9221,
+        longitude=18.4179,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://theginbar.co.za/",
+        phone="+27 71 241 2277",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000032"),
+        name="Black Sheep Restaurant",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Contemporary neighbourhood restaurant on Kloof Street serving an inventive chalkboard blackboard dinner menu of seasonal local dishes.",
+        price_from=Decimal("210"),
+        opening_hours="Mon-Sat 12:00-15:00 & 18:00-22:30",
+        minimum_group_size=1,
+        maximum_group_size=8,
+        source="openstreetmap",
+        address="104 Kloof St, Gardens, Cape Town",
+        latitude=-33.9332,
+        longitude=18.4095,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://blacksheeprestaurant.co.za/",
+        phone="+27 21 426 2153",
+        reservation_url="https://blacksheeprestaurant.co.za/reservations",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000033"),
+        name="Kloof Street House",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Enchanting Victorian villa with lush fairy-lit garden courtyard serving brasserie-style dining, cocktails, and weekend jazz in Gardens.",
+        price_from=Decimal("195"),
+        opening_hours="Mon 12:00-23:00, Tue-Sun 10:00-23:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="30 Kloof St, Gardens, Cape Town",
+        latitude=-33.9298,
+        longitude=18.4116,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.kloofstreethouse.co.za/",
+        phone="+27 21 423 4413",
+        reservation_url="https://www.kloofstreethouse.co.za/reservations",
+    ),
+
+    # --- SOUTHERN SUBURBS ------------------------------------------------------
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000034"),
+        name="Arderne Gardens",
+        location="Cape Town",
+        category=InformationCategory.NATURE,
+        description="Historic public botanical arboretum in Claremont featuring champion exotic trees, peaceful ponds, and winding shaded garden paths.",
+        price_from=Decimal("0"),
+        opening_hours="Daily 08:00-18:00",
+        minimum_group_size=1,
+        maximum_group_size=15,
+        source="openstreetmap",
+        address="222 Main Rd, Claremont, Cape Town",
+        latitude=-33.9853,
+        longitude=18.4682,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://ardernegardens.org.za/",
+        phone="+27 21 762 6750",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000035"),
+        name="Newlands Forest",
+        location="Cape Town",
+        category=InformationCategory.NATURE,
+        description="Lush indigenous forest reserve on the eastern slopes of Table Mountain with shaded streams, hiking trails, and picnic areas.",
+        price_from=Decimal("0"),
+        opening_hours="Daily 06:00-18:00",
+        minimum_group_size=1,
+        maximum_group_size=15,
+        source="openstreetmap",
+        address="Rhodes Ave, Newlands, Cape Town",
+        latitude=-33.9781,
+        longitude=18.4520,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.sanparks.org/parks/table-mountain",
+        phone="+27 21 712 0527",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000036"),
+        name="Montebello Design Centre",
+        location="Cape Town",
+        category=InformationCategory.CULTURE,
+        description="Wooded historic estate promoting local arts, craft studios, pottery workshops, jewelers, and garden cafe in Newlands.",
+        price_from=Decimal("0"),
+        opening_hours="Mon-Fri 09:00-17:00, Sat-Sun 09:00-15:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="31 Newlands Ave, Newlands, Cape Town",
+        latitude=-33.9734,
+        longitude=18.4589,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://montebello.co.za/",
+        phone="+27 21 685 6445",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000037"),
+        name="Chart Farm",
+        location="Cape Town",
+        category=InformationCategory.NATURE,
+        description="Historic heritage farm in Wynberg offering pick-your-own rose gardens, sweeping valley views, and a relaxed farm coffee terrace.",
+        price_from=Decimal("0"),
+        opening_hours="Daily 09:00-16:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="1A Klaassens Rd, Wynberg, Cape Town",
+        latitude=-34.0045,
+        longitude=18.4485,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://chartfarm.co.za/",
+        phone="+27 21 761 0434",
+    ),
+
+    # --- CAMPS BAY & ATLANTIC SEABOARD -----------------------------------------
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000038"),
+        name="The Bungalow Camps Bay",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Chic Mediterranean oceanside restaurant and sunset deck perched directly over the Atlantic rocks between Clifton and Camps Bay.",
+        price_from=Decimal("260"),
+        opening_hours="Daily 12:00-23:00",
+        minimum_group_size=1,
+        maximum_group_size=8,
+        source="openstreetmap",
+        address="3 Victoria Rd, Clifton, Cape Town",
+        latitude=-33.9430,
+        longitude=18.3755,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://thebungalow.co.za/",
+        phone="+27 21 438 2018",
+        reservation_url="https://thebungalow.co.za/bookings",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000039"),
+        name="Camps Bay Tidal Pool",
+        location="Cape Town",
+        category=InformationCategory.NATURE,
+        description="Natural seawater swimming pool sheltered by granite boulders on the southern edge of Camps Bay beach with Twelve Apostles views.",
+        price_from=Decimal("0"),
+        opening_hours="Daily 06:00-20:00",
+        minimum_group_size=1,
+        maximum_group_size=15,
+        source="openstreetmap",
+        address="Victoria Rd, Camps Bay, Cape Town",
+        latitude=-33.9542,
+        longitude=18.3768,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.capetown.gov.za/",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000040"),
+        name="Tiger's Milk Camps Bay",
+        location="Cape Town",
+        category=InformationCategory.FOOD,
+        description="Lively beachfront restaurant and bar on the Camps Bay strip serving artisan pizzas, burgers, and craft beer overlooking the ocean.",
+        price_from=Decimal("140"),
+        opening_hours="Daily 11:00-23:00",
+        minimum_group_size=1,
+        maximum_group_size=10,
+        source="openstreetmap",
+        address="33 Victoria Rd, Camps Bay, Cape Town",
+        latitude=-33.9515,
+        longitude=18.3779,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://tigersmilk.co.za/",
+        phone="+27 21 137 1853",
+    ),
+    Place(
+        id=UUID("30000000-0000-0000-0000-000000000041"),
+        name="Green Point Urban Park",
+        location="Cape Town",
+        category=InformationCategory.NATURE,
+        description="Lush ecological public park next to Cape Town Stadium featuring biodiversity gardens, fitness circuits, tea cafe, and waterways.",
+        price_from=Decimal("0"),
+        opening_hours="Daily 07:00-19:00",
+        minimum_group_size=1,
+        maximum_group_size=15,
+        source="openstreetmap",
+        address="1 Fritz Sonnenberg Rd, Green Point, Cape Town",
+        latitude=-33.9056,
+        longitude=18.4110,
+        operating_status="open",
+        freshness=FreshnessKind.RECENTLY_VERIFIED,
+        verified_at="2026-09",
+        source_url="https://www.capetown.gov.za/",
+        phone="+27 21 417 0111",
+    ),
 )
 
 
@@ -667,18 +1143,23 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
 
     async def find_places(self, criteria: OptionSearchCriteria) -> list[Place]:
         """Find places matching criteria across live data, cache, and verified catalog."""
-        # 1. Check live provider if network enabled and specific location requested
+        # 1. Query the verified real-world catalog first
+        matched = [place for place in PLACES_CATALOG if _matches_place(place, criteria)]
+
+        # 2. Check live provider if network enabled and specific location requested
         if self._enable_network and criteria.location and criteria.location.casefold() not in {"cape town", "town"}:
             live_results = self._try_live_osm_search(criteria.location, criteria.category)
             if live_results:
                 self._has_live_call = True
-                filtered = [p for p in live_results if _matches_place(p, criteria)]
-                if filtered:
-                    return filtered
+                filtered_live = [p for p in live_results if _matches_place(p, criteria)]
+                existing_names = {p.name.strip().casefold() for p in matched}
+                for live_p in filtered_live:
+                    if live_p.name.strip().casefold() not in existing_names:
+                        matched.append(live_p)
+                        existing_names.add(live_p.name.strip().casefold())
 
-        # 2. Query the verified real-world catalog
-        matched = [place for place in PLACES_CATALOG if _matches_place(place, criteria)]
-        if not matched and criteria.location:
+        # 3. Fallback widening if permitted
+        if not matched and criteria.location and _may_widen(criteria.location):
             fallback_criteria = OptionSearchCriteria(
                 location=criteria.geographic_anchor or "Cape Town",
                 category=criteria.category,
@@ -694,7 +1175,7 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
     async def find_activities(self, criteria: OptionSearchCriteria) -> list[Activity]:
         """Find activities matching criteria from the verified real-world catalog."""
         matched = [activity for activity in ACTIVITIES_CATALOG if _matches_activity(activity, criteria)]
-        if not matched and criteria.location:
+        if not matched and criteria.location and _may_widen(criteria.location):
             fallback_criteria = OptionSearchCriteria(
                 location=criteria.geographic_anchor or "Cape Town",
                 category=criteria.category,
@@ -739,9 +1220,22 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
                 data = json.loads(resp.read().decode("utf-8"))
                 places: list[Place] = []
                 for item in data:
+                    item_class = (item.get("class") or "").lower()
+                    item_type = (item.get("type") or "").lower()
+                    if item_class in NON_VENUE_CLASSES or item_type in NON_VENUE_TYPES:
+                        continue
                     display = item.get("display_name", "")
                     addr = item.get("address", {})
-                    name = addr.get("amenity") or addr.get("tourism") or addr.get("leisure") or item.get("name") or display.split(",")[0]
+                    name = (
+                        addr.get("amenity")
+                        or addr.get("tourism")
+                        or addr.get("leisure")
+                        or addr.get("shop")
+                        or item.get("name")
+                        or display.split(",")[0]
+                    ).strip()
+                    if not name or name.casefold() == query_loc.strip().casefold():
+                        continue
                     cat = _map_osm_category(item.get("type", ""), category)
                     place = Place(
                         name=name,
@@ -771,7 +1265,14 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
 
 def _matches_place(place: Place, criteria: OptionSearchCriteria) -> bool:
     return (
-        _matches_location(place.location, place.address, criteria.location)
+        _matches_location(
+            place.location,
+            place.address,
+            criteria.location,
+            latitude=place.latitude,
+            longitude=place.longitude,
+            name=place.name,
+        )
         and (criteria.category is None or place.category is criteria.category)
         and (criteria.maximum_cost is None or place.price_from is None or place.price_from <= criteria.maximum_cost)
         and _supports_group(place.minimum_group_size, place.maximum_group_size, criteria.group_size)
@@ -780,7 +1281,14 @@ def _matches_place(place: Place, criteria: OptionSearchCriteria) -> bool:
 
 def _matches_activity(activity: Activity, criteria: OptionSearchCriteria) -> bool:
     return (
-        _matches_location(activity.location, activity.address, criteria.location)
+        _matches_location(
+            activity.location,
+            activity.address,
+            criteria.location,
+            latitude=activity.latitude,
+            longitude=activity.longitude,
+            name=activity.name,
+        )
         and (criteria.category is None or activity.category is criteria.category)
         and (criteria.maximum_cost is None or activity.cost is None or activity.cost <= criteria.maximum_cost)
         and (criteria.maximum_duration_minutes is None or activity.duration_minutes <= criteria.maximum_duration_minutes)
@@ -788,15 +1296,46 @@ def _matches_activity(activity: Activity, criteria: OptionSearchCriteria) -> boo
     )
 
 
-def _matches_location(loc: str | None, addr: str | None, requested: str | None) -> bool:
+def _matches_location(
+    loc: str | None,
+    addr: str | None,
+    requested: str | None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    name: str | None = None,
+) -> bool:
     if requested is None:
         return True
+    scope = resolve_area_scope(requested)
+    if scope is not None:
+        return classify_in_area(
+            scope,
+            address=addr,
+            location=loc,
+            latitude=latitude,
+            longitude=longitude,
+            name=name,
+        ).status in (
+            AreaStatus.MATCH,
+            AreaStatus.UNKNOWN,
+        )
     req = requested.strip().casefold()
     if req in {"town", "around town", "in town", "cape town", "city"}:
         return True
     loc_val = (loc or "").strip().casefold()
     addr_val = (addr or "").strip().casefold()
-    return req in loc_val or req in addr_val or (loc_val and loc_val in req)
+    name_val = (name or "").strip().casefold()
+    return req in loc_val or req in addr_val or req in name_val or (loc_val and loc_val in req)
+
+
+def _may_widen(requested: str) -> bool:
+    """Whether falling back to the wider city is legitimate for this request.
+
+    A user who named a specific area did not get that area by accident, so an
+    empty result there stays empty and is reported as such. Widening the search
+    is only reasonable when the user asked for the city as a whole.
+    """
+    return resolve_area_scope(requested) is None
 
 
 def _supports_group(minimum: int, maximum: int | None, group_size: int | None) -> bool:

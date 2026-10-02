@@ -18,7 +18,7 @@ from app.domain.entities.mobility.models import (
     ProviderCapability,
 )
 from app.domain.ports.mobility.ports import MobilityProviderPort
-from app.infrastructure.mobility.geo import estimate_network_distance_km
+from app.infrastructure.mobility.geo import address_serves_place, estimate_network_distance_km
 
 MYCITI_ROUTES = [
     {
@@ -72,6 +72,8 @@ MYCITI_ROUTES = [
             "waterfront",
             "v&a waterfront",
             "civic centre",
+            "cape town cbd",
+            "city bowl",
         ],
         "is_trunk": False,
     },
@@ -82,6 +84,7 @@ MYCITI_ROUTES = [
             "sea point",
             "green point",
             "city bowl",
+            "cape town cbd",
             "civic centre",
         ],
         "is_trunk": False,
@@ -180,14 +183,15 @@ class MyCiTiProvider(MobilityProviderPort):
         )
 
     async def get_options(self, requirement: MobilityRequirement) -> list[MobilityOption]:
-        orig = requirement.origin.strip().lower()
-        dest = requirement.destination.strip().lower()
-
-        # Find routes that connect origin and destination
+        # Find routes that actually serve both ends. A route is only applicable when it has a
+        # stop in each address's locality; matching on the city name would claim a bus route
+        # for every Cape Town address.
         matching_routes = []
         for route in MYCITI_ROUTES:
-            has_orig = any(stop in orig or orig in stop for stop in route["stops"])
-            has_dest = any(stop in dest or dest in stop for stop in route["stops"])
+            has_orig = any(address_serves_place(requirement.origin, stop) for stop in route["stops"])
+            has_dest = any(
+                address_serves_place(requirement.destination, stop) for stop in route["stops"]
+            )
             if has_orig and has_dest:
                 matching_routes.append(route)
 
@@ -195,10 +199,14 @@ class MyCiTiProvider(MobilityProviderPort):
         if not matching_routes:
             # Check if both ends match any known MyCiTi stops (allowing 1 transfer at Civic Centre)
             orig_match = any(
-                stop in orig or orig in stop for r in MYCITI_ROUTES for stop in r["stops"]
+                address_serves_place(requirement.origin, stop)
+                for r in MYCITI_ROUTES
+                for stop in r["stops"]
             )
             dest_match = any(
-                stop in dest or dest in stop for r in MYCITI_ROUTES for stop in r["stops"]
+                address_serves_place(requirement.destination, stop)
+                for r in MYCITI_ROUTES
+                for stop in r["stops"]
             )
             if orig_match and dest_match:
                 # Connected via Civic Centre hub
@@ -272,6 +280,8 @@ class MyCiTiProvider(MobilityProviderPort):
                 duration_minutes=duration_minutes,
                 cost=fare,
                 cost_is_unknown=False,
+                # Derived from a static distance-band table, not a live quote.
+                cost_is_estimated=True,
                 currency="ZAR",
                 walking_duration_minutes=5,  # walking buffer to/from station
                 transfers=transfers,

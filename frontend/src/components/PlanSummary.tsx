@@ -5,6 +5,7 @@ import type {
   PlanHealthCheckRead,
   PlanRead,
   PlanTransitionRead,
+  OrchestratedPlanRead,
 } from '../types/planning';
 import {
   checkPlanHealth,
@@ -13,8 +14,13 @@ import {
   getPlanActions,
   getPlanTransitions,
   uncompletePlanItem,
+  orchestratePlan,
 } from '../api/planning';
 import { TransitionBadge } from './TransitionBadge';
+import { TransportLeg } from './TransportLeg';
+import { formatExactCurrency, summarizeItineraryCosts } from '../utils/itineraryBuilder';
+import { planSummaryLine, planTitle } from '../utils/planVoice';
+import { StageFrame } from './StageFrame';
 import {
   CategoryIcon,
   IconClock,
@@ -29,8 +35,14 @@ import {
   IconAlertCircle,
   IconX,
   IconArrowRight,
+  IconArrowUpRight,
   IconPlus,
 } from './Icons';
+
+function describeOrigin(origin: string): string {
+  const looksLikeCoords = /^-?\d+(\.\d+)?\s*,\s*-?\d+(\.\d+)?$/.test(origin.trim());
+  return looksLikeCoords ? 'your current location' : origin;
+}
 
 interface PlanSummaryProps {
   plan: PlanRead;
@@ -62,10 +74,9 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     return isNaN(num) ? String(val) : `R${num.toFixed(0)}`;
   };
 
-  const remaining = plan.budget?.remaining_budget;
-  const isOverBudget = plan.budget?.is_over_budget;
   const groupSize = plan.context?.group_size || 1;
   const groupLabel = groupSize > 1 ? `${groupSize} people` : '1 person';
+  const origin = plan.understanding?.origin || plan.context?.origin || null;
 
   // Load execution actions whenever plan changes
   const fetchActions = async () => {
@@ -90,6 +101,19 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     }
   };
 
+  const [orchestrated, setOrchestrated] = useState<OrchestratedPlanRead | null>(null);
+  const savedBudgetMax = plan.budget?.budget_maximum == null
+    ? null
+    : Number(plan.budget.budget_maximum);
+  const savedCostSummary = summarizeItineraryCosts(
+    plan.items.map((item) => item.estimated_cost),
+    orchestrated?.feasibility.total_known_transition_cost ?? null,
+    orchestrated?.feasibility.has_unknown_transition_costs ?? plan.items.length > 0,
+    savedBudgetMax
+  );
+  const remaining = savedCostSummary.remainingBudget;
+  const isOverBudget = savedCostSummary.isOverBudget;
+
   // Fetch transitions if not already attached
   const fetchTransitions = async () => {
     if (plan.transitions && plan.transitions.length > 0) {
@@ -104,11 +128,46 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     }
   };
 
+  // Orchestrate saved itinerary to resolve transport corridors, timetables, and opening hours
+  const fetchOrchestrated = async () => {
+    if (!plan.items || plan.items.length === 0) return;
+    try {
+      const stops = plan.items.map((item) => ({
+        name: item.name,
+        location: item.location || item.name,
+        option_id: item.id,
+        start_time: item.start_time || undefined,
+        end_time: item.end_time || undefined,
+        estimated_cost: item.estimated_cost != null ? Number(item.estimated_cost) : undefined,
+        category: item.item_type,
+        duration_minutes: item.duration_minutes ?? undefined,
+        description: item.description ?? undefined,
+      }));
+      const res = await orchestratePlan(
+        plan.id,
+        stops,
+        origin,
+        undefined,
+        groupSize
+      );
+      setOrchestrated(res);
+      if (res.legs && res.legs.length > 0) {
+        setTransitions(res.legs.map((l) => l.transition));
+      }
+    } catch (err) {
+      console.warn('Could not orchestrate saved plan transport:', err);
+    }
+  };
+
   useEffect(() => {
     fetchActions();
     fetchHealth();
     fetchTransitions();
+    fetchOrchestrated();
   }, [plan.id, plan.updated_at, plan.items.length]);
+
+  const legOffset = orchestrated?.origin_resolved ? 1 : 0;
+  const originLeg = orchestrated?.origin_resolved ? orchestrated.legs?.[0] : null;
 
   const handleActionClick = async (itemId: string, action: ExecutionActionRead) => {
     setExecutingActionId(action.id);
@@ -179,8 +238,26 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
   const completedStopsCount =
     planActions?.items.filter((i) => i.item_status === 'completed').length || 0;
 
+  // The same naming the proposal used, so the plan keeps its identity once saved.
+  //
+  // The stored plan title is a template — "Southern Suburbs Day Out · ~R400" — and
+  // it is honest but it says nothing about the day. The name derived from the
+  // stops themselves ("A Slow Afternoon in Southern Suburbs") is the one worth
+  // leading with, so it wins whenever there is something to derive it from. The
+  // stored title is still shown, quietly, because it carries the budget figure
+  // the derived name does not.
+  const derivedTitle = planTitle(plan.understanding, plan.items);
+  const savedTitle = plan.items.length > 0 ? derivedTitle : plan.title || derivedTitle;
+  const savedSummary = planSummaryLine(plan.items);
+  const storedTitle = plan.title && plan.title !== savedTitle ? plan.title : null;
+
   return (
-    <div className="saved-plan-container">
+    <StageFrame
+      stage={6}
+      className="saved-plan-container df-light df-light--quiet"
+      title={<>Now go live <em>your day.</em></>}
+      lede="This is the plan. Everything below is somewhere real, with what you need once you are on your way."
+    >
       {/* Toast Feedback Notification */}
       {feedback && (
         <div className={`editorial-toast ${feedback.type}`}>
@@ -204,7 +281,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
           <div className="saved-status-ribbon">
             <span className="saved-badge">
               <IconCheck size={13} />
-              <span>SAVED PLAN</span>
+              <span>Saved plan</span>
             </span>
 
             {planProgression === 'completed' ? (
@@ -248,7 +325,9 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
           </div>
         </div>
 
-        <h1 className="saved-plan-title">{plan.title || 'Your Confirmed Itinerary'}</h1>
+        <p className="saved-plan-title">{savedTitle}</p>
+        <p className="saved-plan-summary">{savedSummary}</p>
+        {storedTitle && <p className="saved-plan-stored-title">{storedTitle}</p>}
         <p className="saved-plan-intention">“{plan.intention}”</p>
 
         <div className="saved-meta-row">
@@ -256,6 +335,12 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
             <div className="saved-meta-item">
               <IconMapPin size={14} />
               <span>{plan.context.location}</span>
+            </div>
+          )}
+          {origin && (
+            <div className="saved-meta-item">
+              <IconNavigation size={14} />
+              <span>Starts from {origin}</span>
             </div>
           )}
           <div className="saved-meta-item">
@@ -300,26 +385,44 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
         </div>
       )}
 
-      {/* Refined Budget Bar */}
+      {/* Budget & financial clarity: open, prominent, actionable */}
       {plan.budget && (
-        <div className="saved-budget-bar">
-          <div className="saved-budget-stat">
-            <span className="saved-stat-label">Budget ceiling</span>
-            <span className="saved-stat-val">
-              {formatCurrency(plan.budget.budget_maximum)}
+        <div className="saved-budget-card">
+          <div className="saved-budget-header">
+            <span className="saved-budget-kicker">BUDGET & FINANCIAL SUMMARY</span>
+            <span className={`saved-budget-status-pill ${isOverBudget ? 'is-over' : savedCostSummary.hasUnknownCosts ? 'is-unverified' : 'is-under'}`}>
+              {isOverBudget ? 'Over limit' : savedCostSummary.hasUnknownCosts ? 'Cost unavailable' : 'In budget'}
             </span>
           </div>
-          <div className="saved-budget-stat">
-            <span className="saved-stat-label">Planned total</span>
-            <span className="saved-stat-val primary">
-              {formatCurrency(plan.budget.total_planned_cost)}
-            </span>
-          </div>
-          <div className="saved-budget-stat">
-            <span className="saved-stat-label">Remaining</span>
-            <span className={`saved-stat-val ${isOverBudget ? 'alert' : 'positive'}`}>
-              {formatCurrency(remaining)}
-            </span>
+          <div className="saved-budget-grid">
+            <div className="saved-budget-cell">
+              <span className="saved-cell-label">Budget ceiling</span>
+              <span className="saved-cell-val">
+                {formatCurrency(plan.budget.budget_maximum)}
+              </span>
+            </div>
+            <div className="saved-budget-cell">
+              <span className="saved-cell-label">Planned total</span>
+              <span className="saved-cell-val is-primary">
+                {savedCostSummary.totalLabel}
+              </span>
+            </div>
+            <div className="saved-budget-cell">
+              <span className="saved-cell-label">Remaining</span>
+              <span className={`saved-cell-val ${isOverBudget ? 'is-alert' : 'is-positive'}`}>
+                {remaining !== null ? formatExactCurrency(remaining) : savedBudgetMax !== null ? 'Unavailable' : 'Flexible'}
+              </span>
+            </div>
+            {groupSize > 1 && (
+              <div className="saved-budget-cell">
+                <span className="saved-cell-label">Per person ({groupLabel})</span>
+                <span className="saved-cell-val">
+                  {savedCostSummary.hasUnknownCosts
+                    ? 'Price unavailable'
+                    : formatCurrency(Math.round(savedCostSummary.knownTotal / groupSize))}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -339,11 +442,58 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
           </div>
         ) : (
           <div className="saved-stops-timeline">
+            {/* Origin corridor leg if origin was stated */}
+            {origin && originLeg && (
+              <div className="saved-origin-leg-wrap">
+                <TransportLeg leg={originLeg} legIndex={0} />
+              </div>
+            )}
+            {origin && !originLeg && (
+              <div className="saved-origin-start-badge">
+                <div className="origin-badge-info">
+                  <IconNavigation size={14} />
+                  <span>Starting out from <strong>{describeOrigin(origin)}</strong></span>
+                </div>
+                {plan.items[0] && (
+                  <a
+                    href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(plan.items[0].location || plan.items[0].name)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="saved-origin-directions-link"
+                    title="Get directions from origin to first stop"
+                  >
+                    <span>Directions to {plan.items[0].name}</span>
+                    <IconArrowUpRight size={12} />
+                  </a>
+                )}
+              </div>
+            )}
+
             {plan.items.map((item, idx) => {
               const isLast = idx === plan.items.length - 1;
               const itemActionsData = planActions?.items.find((i) => i.item_id === item.id);
               const isItemCompleted = itemActionsData?.item_status === 'completed';
-              const actions = itemActionsData?.actions || [];
+              const schedStop = orchestrated?.stops?.find((s) => s.name === item.name);
+              const actions: ExecutionActionRead[] =
+                itemActionsData?.actions && itemActionsData.actions.length > 0
+                  ? itemActionsData.actions
+                  : (schedStop?.actions || []).map((va, vIdx) => ({
+                      id: `act-${item.id}-${vIdx}`,
+                      item_id: item.id,
+                      action_type: va.action_type,
+                      label: va.label,
+                      target_url: va.target_url,
+                      is_available: true,
+                      status: 'available',
+                      description: va.description,
+                    }));
+              const rawHours = itemActionsData?.opening_hours || schedStop?.opening_hours;
+              const formattedHours = rawHours
+                ? (/^open/i.test(rawHours.trim()) ? rawHours.trim() : `Open ${rawHours.trim()}`)
+                : 'Opening hours unavailable';
+              const address = itemActionsData?.address || schedStop?.address || item.location;
+              const contactHint = itemActionsData?.contact_hint || schedStop?.contact_hint;
+              const nextLeg = orchestrated?.legs?.[legOffset + idx];
 
               // Check for stop-level live signal
               const stopSignal = healthCheck?.signals?.find(
@@ -393,10 +543,23 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                         )}
                       </div>
 
-                      {item.location && (
+                      {address && (
                         <div className="saved-stop-address">
                           <IconMapPin size={13} />
-                          <span>{item.location}</span>
+                          <span>{address}</span>
+                        </div>
+                      )}
+
+                      {formattedHours && (
+                        <div className="saved-stop-hours">
+                          <IconClock size={12} />
+                          <span>{formattedHours}</span>
+                        </div>
+                      )}
+
+                      {contactHint && (
+                        <div className="saved-stop-contact-hint">
+                          <span>{contactHint}</span>
                         </div>
                       )}
 
@@ -429,23 +592,31 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                               actionIcon = isItemCompleted ? <IconUndo size={14} /> : <IconCheck size={14} />;
                             }
 
+                            /* One primary action per stop, and the rest are
+                               consequences of being there. */
+                            const isPrimary = act.action_type === 'directions';
+
                             return (
                               <button
                                 key={act.id}
                                 type="button"
-                                className={`contextual-action-btn ${
+                                className={[
+                                  'contextual-action-btn',
+                                  isPrimary ? 'is-primary' : 'is-secondary',
                                   act.action_type === 'mark_complete'
                                     ? isItemCompleted
                                       ? 'undo'
                                       : 'complete'
-                                    : ''
-                                }`}
+                                    : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join(' ')}
                                 disabled={isBusy}
                                 onClick={() => handleActionClick(item.id, act)}
                                 title={act.description || act.label}
                               >
                                 {actionIcon}
-                                <span>{isBusy ? 'Opening...' : act.label}</span>
+                                <span>{isBusy ? 'Opening…' : act.label}</span>
                               </button>
                             );
                           })}
@@ -453,8 +624,17 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                       )}
 
                       {/* Mobility Transition to Next Stop */}
-                      {!isLast && transitions[idx] && (
-                        <TransitionBadge transition={transitions[idx]} />
+                      {!isLast && nextLeg && (
+                        <div className="saved-leg-transition">
+                          <TransportLeg leg={nextLeg} legIndex={legOffset + idx} />
+                        </div>
+                      )}
+                      {!isLast && !nextLeg && transitions[idx] && (
+                        <TransitionBadge
+                          transition={transitions[idx]}
+                          fromLabel={item.location || item.name}
+                          toLabel={plan.items[idx + 1]?.location || plan.items[idx + 1]?.name}
+                        />
                       )}
                     </div>
                   </div>
@@ -516,6 +696,6 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
           </button>
         </div>
       )}
-    </div>
+    </StageFrame>
   );
 };

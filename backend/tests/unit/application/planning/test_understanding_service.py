@@ -99,6 +99,15 @@ def test_date_and_time_window_extraction(engine: DeterministicUnderstandingEngin
     assert u_weekend.date_spec == "This weekend"
 
 
+def test_public_transport_request_is_an_explicit_transport_preference(
+    engine: DeterministicUnderstandingEngine,
+) -> None:
+    understanding = engine.parse("Take me to Kirstenbosch by public transport")
+
+    assert understanding.transport_mode == "public_transport"
+    assert understanding.provenance["transport_mode"] == ProvenanceKind.EXPLICIT.value
+
+
 def test_hard_exclusions_detection(engine: DeterministicUnderstandingEngine) -> None:
     u_outdoor = engine.parse("Indoor activities only, no outdoors or nature")
     assert "no_outdoors" in u_outdoor.exclusions
@@ -187,4 +196,30 @@ def test_birthday_group_budget_scenario(engine: DeterministicUnderstandingEngine
     assert u.budget_kind == BudgetKind.HARD_MAX
     assert u.time_window == "afternoon"
     assert "romantic" in u.preferences or "cute" in req.lower()
+
+
+def test_a_specific_intent_drives_the_right_category_not_generic_broadening(
+    engine: DeterministicUnderstandingEngine,
+) -> None:
+    """A named experience supplies its own category instead of 'fun' broadening.
+
+    'historic architecture' is a culture ask via the historic_streets requirement,
+    and 'vintage shops' is a shopping ask via the shopping requirement. Neither
+    collapses into a generic food/culture/nature mix when a specific intent
+    is on the table.
+    """
+    architecture = engine.parse("Somewhere to explore historic architecture this weekend.")
+    assert "historic_streets" in architecture.experience_requirements
+    assert InformationCategory.CULTURE in architecture.activity_types
+
+    shops = engine.parse("Browse vintage shops for an hour or so.")
+    assert "shopping" in shops.experience_requirements
+    assert InformationCategory.SHOPPING in shops.activity_types
+
+    reading = engine.parse("Read somewhere cozy this afternoon.")
+    assert "quiet_focus" in reading.experience_requirements
+    # quiet_focus has no catalog category, so nothing substitutes for it.
+    for broad in (InformationCategory.FOOD, InformationCategory.NATURE, InformationCategory.CULTURE):
+        assert broad not in reading.activity_types
+
 

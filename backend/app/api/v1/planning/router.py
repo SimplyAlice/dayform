@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Annotated
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.api.deps import (
     get_intent_interpreter,
+    get_itinerary_orchestrator,
     get_live_intelligence_service,
     get_mobility_planning_service,
     get_plan_adaptation_service,
@@ -44,6 +46,7 @@ from app.domain.entities.planning.adaptation import ItemAction, ItemDiff, PlanAd
 from app.domain.entities.planning.constraint import ConstraintType
 from app.domain.entities.planning.decision import CandidateType
 from app.domain.entities.planning.transition import ItineraryFeasibility, PlanTransition
+from app.application.planning.orchestration_service import ItineraryOrchestrator
 from app.domain.entities.planning.execution import (
     ExecutionAction,
     ExecutionActionStatus,
@@ -61,6 +64,7 @@ from app.domain.entities.planning.live_intelligence import (
 )
 from app.domain.entities.planning.plan import Plan, PlanStatus
 from app.domain.entities.planning.plan_item import PlanItem, PlanItemType
+from app.domain.entities.planning.requirements import requirement_by_slug
 from app.domain.entities.planning.understanding import PlanningUnderstanding
 from app.infrastructure.db.models import User
 
@@ -82,6 +86,7 @@ class ContextWrite(BaseModel):
     end_time: datetime | None = None
     group_size: int = Field(default=1, ge=1)
     transport_mode: str | None = Field(default=None, max_length=100)
+    origin: str | None = Field(default=None, max_length=255)
 
     def to_changes(self) -> dict[str, object]:
         return self.model_dump()
@@ -93,6 +98,7 @@ class ContextPatch(BaseModel):
     end_time: datetime | None = None
     group_size: int | None = Field(default=None, ge=1)
     transport_mode: str | None = Field(default=None, max_length=100)
+    origin: str | None = Field(default=None, max_length=255)
 
     def to_changes(self) -> dict[str, object]:
         return self.model_dump(exclude_unset=True)
@@ -106,7 +112,8 @@ class CreatePlanRequest(ContextWrite):
     def to_data(self, user_id: UUID) -> CreatePlanData:
         return CreatePlanData(user_id=user_id, intention=self.intention, title=self.title, location=self.location,
                               start_time=self.start_time, end_time=self.end_time, group_size=self.group_size,
-                              transport_mode=self.transport_mode, constraints=[item.to_input() for item in self.constraints])
+                              transport_mode=self.transport_mode, origin=self.origin,
+                              constraints=[item.to_input() for item in self.constraints])
 
 
 class PlanPatchRequest(BaseModel):
@@ -172,6 +179,7 @@ class UnderstandingRead(BaseModel):
     duration_limit_minutes: int | None = None
     location: str | None = None
     location_is_inferred: bool = False
+    origin: str | None = None
     transport_mode: str | None = None
     budget_amount: Decimal | None = None
     budget_kind: str = "none"
@@ -179,6 +187,11 @@ class UnderstandingRead(BaseModel):
     exclusions: list[str] = Field(default_factory=list)
     activity_types: list[str] = Field(default_factory=list)
     semantic_descriptors: list[str] = Field(default_factory=list)
+    # The distinct things the user asked for, kept apart from broad categories.
+    experience_requirements: list[str] = Field(default_factory=list)
+    # The same requirements in the user's language. The slugs are the domain
+    # identity; these are what a person should read back.
+    experience_requirement_labels: list[str] = Field(default_factory=list)
     setting_preference: str | None = None
     weather_context: str | None = None
     ambiguities: list[str] = Field(default_factory=list)
@@ -199,6 +212,7 @@ class UnderstandingRead(BaseModel):
             duration_limit_minutes=u.duration_limit_minutes,
             location=u.location,
             location_is_inferred=u.location_is_inferred,
+            origin=u.origin,
             transport_mode=u.transport_mode,
             budget_amount=u.budget_amount,
             budget_kind=u.budget_kind.value,
@@ -206,6 +220,12 @@ class UnderstandingRead(BaseModel):
             exclusions=list(u.exclusions),
             activity_types=[cat.value for cat in u.activity_types],
             semantic_descriptors=list(u.semantic_descriptors),
+            experience_requirements=list(u.experience_requirements),
+            experience_requirement_labels=[
+                requirement_by_slug(slug).label
+                for slug in u.experience_requirements
+                if requirement_by_slug(slug) is not None
+            ],
             setting_preference=u.setting_preference,
             weather_context=u.weather_context,
             ambiguities=list(u.ambiguities),
@@ -219,6 +239,9 @@ class PlanModifyRequest(BaseModel):
 
 class CreatePlanFromIntentRequest(BaseModel):
     request: str = Field(..., min_length=1, max_length=5000)
+    origin: str | None = Field(default=None, max_length=255)
+    start_time: str | None = Field(default=None, max_length=100)
+    transport_preference: str | None = Field(default=None, max_length=50)
 
 
 class SelectOptionRequest(BaseModel):
@@ -237,6 +260,7 @@ class ContextRead(BaseModel):
     end_time: datetime | None
     group_size: int
     transport_mode: str | None
+    origin: str | None = None
 
 
 class ConstraintRead(BaseModel):
@@ -325,6 +349,7 @@ class PlanTransitionRead(BaseModel):
     provider_name: str
     cost: Decimal | None = None
     cost_known: bool
+    cost_is_estimated: bool = False
     currency: str = "ZAR"
     transfers: int = 0
     confidence: float
@@ -334,6 +359,9 @@ class PlanTransitionRead(BaseModel):
     summary: str
     is_feasible: bool = True
     feasibility_issue: str | None = None
+    # Explains an unrequested transport substitution so the UI can show it rather
+    # than presenting a substituted mode as if the user had chosen it.
+    mode_substitution_reason: str | None = None
     # M16 live mobility state. `unavailable` means no live source exists for this
     # provider, which is distinct from live data that simply could not be fetched.
     live_availability: str = "unavailable"
@@ -361,6 +389,7 @@ class PlanTransitionRead(BaseModel):
             provider_name=t.provider_name,
             cost=t.cost,
             cost_known=t.cost_known,
+            cost_is_estimated=t.cost_is_estimated,
             currency=t.currency,
             transfers=t.transfers,
             confidence=t.confidence,
@@ -370,6 +399,7 @@ class PlanTransitionRead(BaseModel):
             summary=t.summary,
             is_feasible=t.is_feasible,
             feasibility_issue=t.feasibility_issue,
+            mode_substitution_reason=t.mode_substitution_reason,
             live_availability=t.live_availability.value if hasattr(t.live_availability, "value") else str(t.live_availability),
             live_explanation=t.live_explanation,
             live_source=t.live_source,
@@ -443,6 +473,229 @@ class ProposedTransitionsRequest(BaseModel):
     party_size: int = Field(default=1, ge=1)
 
 
+class OrchestrateStopRead(BaseModel):
+    """A requested stop, before any timing has been decided."""
+
+    name: str = Field(default="", max_length=255)
+    location: str = Field(..., min_length=1, max_length=255)
+    option_id: str = Field(default="", max_length=255)
+    duration_minutes: int | None = Field(default=None, ge=1, le=1440)
+    estimated_cost: Decimal | None = Field(default=None, ge=0)
+    address: str | None = Field(default=None, max_length=500)
+    opening_hours: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=64)
+    source_url: str | None = Field(default=None, max_length=1000)
+    reservation_url: str | None = Field(default=None, max_length=1000)
+    category: str | None = Field(default=None, max_length=64)
+    # The venue's own words, so coverage is checked against real evidence.
+    description: str | None = Field(default=None, max_length=1000)
+
+
+class OrchestrateRequest(BaseModel):
+    # An empty list is allowed on purpose: "nothing suitable was found" is a real
+    # answer that has to be validated and explained, not a request to reject.
+    stops: list[OrchestrateStopRead] = Field(..., max_length=20)
+    origin: str | None = Field(default=None, max_length=255)
+    preferred_modes: list[str] | None = None
+    party_size: int | None = Field(default=None, ge=1, le=50)
+    preferred_provider: str | None = Field(default=None, max_length=64)
+    selected_leg_options: dict[int, str] | None = None
+
+
+class VenueActionRead(BaseModel):
+    """An action the user can take to actually reach, contact or book a venue."""
+
+    action_type: str
+    label: str
+    target_url: str
+    description: str | None = None
+
+
+class OrchestratedStopRead(BaseModel):
+    name: str
+    location: str
+    address: str | None = None
+    opening_hours: str | None = None
+    phone: str | None = None
+    source_url: str | None = None
+    reservation_url: str | None = None
+    category: str | None = None
+    estimated_cost: Decimal | None = None
+    duration_minutes: int
+    start_time: datetime
+    end_time: datetime
+    actions: list[VenueActionRead] = Field(default_factory=list)
+    contact_hint: str | None = None
+    description: str | None = None
+
+
+class RequirementCoverageRead(BaseModel):
+    """Whether one thing the user asked for is actually represented in the plan."""
+
+    slug: str
+    label: str
+    kind: str
+    is_covered: bool
+    status: str
+    # Which stops carry the evidence, and what in them matched.
+    supported_by: list[str] = Field(default_factory=list)
+    evidence_terms: list[str] = Field(default_factory=list)
+
+
+class IntentCoverageRead(BaseModel):
+    """Coverage of the user's stated requirements over the final plan."""
+
+    status: str = "not_applicable"
+    items: list[RequirementCoverageRead] = Field(default_factory=list)
+    covered_count: int = 0
+    total_count: int = 0
+
+
+class PlanningConflictRead(BaseModel):
+    """A stated requirement that could not be met, in plain language."""
+
+    kind: str
+    message: str
+    requirement_slug: str | None = None
+    requirement_label: str | None = None
+
+
+class RemovedStopRead(BaseModel):
+    """A stop removed to satisfy a hard constraint."""
+
+    name: str
+    reason: str
+
+
+class MobilityOptionRead(BaseModel):
+    id: str
+    provider_id: str
+    provider_name: str
+    mode: str
+    departure_time: datetime | None = None
+    arrival_time: datetime | None = None
+    duration_minutes: int | None = None
+    cost: Decimal | None = None
+    cost_is_unknown: bool = True
+    cost_is_estimated: bool = False
+    currency: str = "ZAR"
+    transfers: int = 0
+    confidence: float = 0.0
+    booking_url: str | None = None
+    summary: str | None = None
+    action_label: str | None = None
+    schedule_note: str | None = None
+    route_or_line: str | None = None
+    live_status: str = "unknown"
+
+    @classmethod
+    def from_domain(cls, option: object) -> MobilityOptionRead:
+        mode = getattr(option, "mode", None)
+        mode_val = mode.value if hasattr(mode, "value") else str(mode)
+        provider_id = getattr(option, "provider_id", "")
+        provider_name = getattr(option, "provider_name", "")
+        booking_url = getattr(option, "booking_url", None)
+        summary = getattr(option, "summary", "") or None
+        evidence = getattr(option, "evidence", [])
+
+        action_label: str | None = None
+        if provider_id == "uber":
+            action_label = "Open Uber"
+        elif provider_id == "bolt":
+            action_label = "Open Bolt"
+        elif provider_id == "indrive":
+            action_label = "Open inDrive"
+        elif provider_id == "myciti" and booking_url:
+            action_label = "View MyCiTi Timetable"
+        elif provider_id == "prasa_metrorail" and booking_url:
+            action_label = "View Metrorail Timetable"
+        elif provider_id == "golden_arrow" and booking_url:
+            action_label = "View Golden Arrow Timetable"
+
+        route_or_line: str | None = None
+        for ev in evidence:
+            stop_or_route = getattr(ev, "relevant_route_or_stop", None)
+            if stop_or_route:
+                route_or_line = str(stop_or_route)
+                break
+        if not route_or_line and summary:
+            if "Southern Line" in summary:
+                route_or_line = "Southern Line"
+            elif "Northern Line" in summary:
+                route_or_line = "Northern Line"
+            elif "MyCiTi" in summary:
+                import re
+                m = re.search(r"MyCiTi\s+([A-Z0-9]+(?:\s*\([^)]+\))?)", summary)
+                if m:
+                    route_or_line = m.group(1)
+
+        schedule_note: str | None = None
+        if provider_id in {"myciti", "prasa_metrorail", "golden_arrow"}:
+            schedule_note = "Scheduled service · Timetable available (live departures not currently verified)"
+        elif provider_id in {"uber", "bolt", "indrive"}:
+            schedule_note = "On-demand trip · Final fare confirmed in app"
+        elif mode_val in {"walk", "walking"}:
+            schedule_note = "Direct walking route"
+
+        live_stat = getattr(option, "live_status", None)
+        live_stat_val = live_stat.value if hasattr(live_stat, "value") else str(live_stat or "unknown")
+
+        return cls(
+            id=option.id,  # type: ignore[attr-defined]
+            provider_id=provider_id,
+            provider_name=provider_name,
+            mode=mode_val,
+            departure_time=getattr(option, "departure_time", None),
+            arrival_time=getattr(option, "arrival_time", None),
+            duration_minutes=getattr(option, "duration_minutes", None),
+            cost=getattr(option, "cost", None),
+            cost_is_unknown=bool(getattr(option, "cost_is_unknown", True)),
+            cost_is_estimated=bool(getattr(option, "cost_is_estimated", False)),
+            currency=getattr(option, "currency", "ZAR"),
+            transfers=getattr(option, "transfers", 0),
+            confidence=getattr(option, "confidence", 0.0),
+            booking_url=booking_url,
+            summary=summary,
+            action_label=action_label,
+            schedule_note=schedule_note,
+            route_or_line=route_or_line,
+            live_status=live_stat_val,
+        )
+
+
+class OrchestratedLegRead(BaseModel):
+    from_label: str
+    to_label: str
+    transition: PlanTransitionRead
+    selected_option_id: str | None = None
+    alternatives: list[MobilityOptionRead] = Field(default_factory=list)
+    all_options: list[MobilityOptionRead] = Field(default_factory=list)
+    reason: str | None = None
+    preference_honoured: bool | None = None
+    preference_note: str | None = None
+
+
+class OrchestratedPlanRead(BaseModel):
+    """A complete, transport-aware plan presented before the user confirms."""
+
+    plan_id: UUID
+    origin: str | None = None
+    origin_resolved: bool = False
+    stops: list[OrchestratedStopRead] = Field(default_factory=list)
+    legs: list[OrchestratedLegRead] = Field(default_factory=list)
+    feasibility: ItineraryFeasibilityRead
+    day_start: datetime | None = None
+    day_end: datetime | None = None
+    transport_preference: str | None = None
+    transport_preference_honoured: bool | None = None
+    transport_preference_note: str | None = None
+    # Validation outcome. A plan that fails these is not presented as valid.
+    is_valid: bool = True
+    coverage: IntentCoverageRead | None = None
+    conflicts: list[PlanningConflictRead] = Field(default_factory=list)
+    removed_stops: list[RemovedStopRead] = Field(default_factory=list)
+
+
 def _preferred_modes_from_context(transport_mode: str | None) -> list[TransportMode]:
     """Translate an extracted transport preference into concrete M14 transport modes.
 
@@ -491,6 +744,7 @@ class PlanRead(BaseModel):
         context = None if plan.context is None else ContextRead(
             location=plan.context.location, start_time=plan.context.start_time, end_time=plan.context.end_time,
             group_size=plan.context.group_size, transport_mode=plan.context.transport_mode,
+            origin=plan.context.origin,
         )
         budget = plan.budget_summary()
         u_read = (
@@ -624,6 +878,9 @@ class PlanItemActionsRead(BaseModel):
     item_name: str
     item_status: str
     actions: list[ExecutionActionRead]
+    opening_hours: str | None = None
+    address: str | None = None
+    contact_hint: str | None = None
 
 
 class PlanActionsRead(BaseModel):
@@ -776,6 +1033,7 @@ def _build_plan_understanding_read(plan: Plan) -> UnderstandingRead:
         duration_limit_minutes=stored_duration_limit or (parsed.duration_limit_minutes if parsed else None),
         location=location,
         location_is_inferred=parsed.location_is_inferred if parsed else True,
+        origin=plan.context.origin if plan.context else (parsed.origin if parsed else None),
         budget_amount=budget_amount,
         budget_kind=budget_kind,
         preferences=merged_preferences,
@@ -807,6 +1065,21 @@ async def create_plan_from_request(
     service: Annotated[PlanningService, Depends(get_planning_service)],
 ) -> PlanRead:
     understanding = await understanding_engine.understand(current_user.id, body.request)
+    if body.origin and body.origin.strip():
+        understanding = replace(understanding, origin=body.origin.strip())
+    if body.transport_preference and body.transport_preference.strip():
+        understanding = replace(understanding, transport_mode=body.transport_preference.strip())
+    if body.start_time and body.start_time.strip():
+        st_clean = body.start_time.strip()
+        try:
+            parsed_dt = datetime.fromisoformat(st_clean)
+            understanding = replace(
+                understanding,
+                start_time=parsed_dt.strftime("%H:%M"),
+                date_spec=parsed_dt.strftime("%Y-%m-%d"),
+            )
+        except Exception:
+            understanding = replace(understanding, start_time=st_clean)
     plan = await service.create_plan_from_understanding(current_user.id, understanding)
     return PlanRead.from_plan(plan, understanding=understanding)
 
@@ -999,6 +1272,9 @@ async def get_plan_actions(
                     item_name=item_acts.item_name,
                     item_status=item_acts.item_status,
                     actions=[ExecutionActionRead.from_domain(a) for a in item_acts.actions],
+                    opening_hours=item_acts.opening_hours,
+                    address=item_acts.address,
+                    contact_hint=item_acts.contact_hint,
                 )
                 for item_acts in actions_data.items
             ],
@@ -1126,6 +1402,167 @@ async def evaluate_plan_transitions(
         )
     except PlanningNotFoundError as exc:
         raise _not_found(exc) from exc
+
+
+@router.post("/plans/{plan_id}/orchestrate", response_model=OrchestratedPlanRead)
+async def orchestrate_plan(
+    plan_id: UUID,
+    body: OrchestrateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    planning_service: Annotated[PlanningService, Depends(get_planning_service)],
+    orchestrator: Annotated[ItineraryOrchestrator, Depends(get_itinerary_orchestrator)],
+) -> OrchestratedPlanRead:
+    """Produce a complete, transport-aware plan before the user confirms it.
+
+    This is the step the previous flow was missing. It resolves origin, evaluates
+    every transport option across every leg, selects the option that fits the
+    plan's constraints, and only then assigns time windows. The returned schedule
+    already contains the travel time, so a proposed plan is coherent on arrival
+    rather than becoming infeasible after the fact.
+    """
+    from app.application.planning.orchestration_service import OrchestrationStopInput
+
+    try:
+        plan = await planning_service.get_plan(current_user.id, plan_id)
+    except PlanningNotFoundError as exc:
+        raise _not_found(exc) from exc
+
+    pref_modes: list[TransportMode] = []
+    for mode in body.preferred_modes or []:
+        try:
+            pref_modes.append(TransportMode(mode.lower()))
+        except ValueError:
+            continue
+    if not pref_modes:
+        pref_modes = _preferred_modes_from_context(
+            plan.context.transport_mode if plan.context else None
+        )
+
+    # An explicitly supplied origin wins; otherwise fall back to an origin the
+    # user stated in their own words. When neither exists the plan is returned
+    # with `origin_resolved=False` and no invented starting point.
+    origin = (body.origin or "").strip() or (plan.context.origin if plan.context else None)
+
+    stops = [
+        OrchestrationStopInput(
+            name=stop.name,
+            location=stop.location,
+            option_id=stop.option_id,
+            duration_minutes=stop.duration_minutes,
+            estimated_cost=stop.estimated_cost,
+            address=stop.address,
+            opening_hours=stop.opening_hours,
+            phone=stop.phone,
+            source_url=stop.source_url,
+            reservation_url=stop.reservation_url,
+            category=stop.category,
+            description=stop.description,
+        )
+        for stop in body.stops
+    ]
+
+    orchestrated = await orchestrator.orchestrate(
+        plan,
+        stops,
+        origin=origin,
+        preferred_modes=pref_modes or None,
+        party_size=body.party_size or (plan.context.group_size if plan.context else 1),
+        preferred_provider=body.preferred_provider,
+        selected_leg_options=body.selected_leg_options,
+    )
+
+    feasibility = orchestrated.feasibility
+    if feasibility is None:
+        feasibility = ItineraryFeasibility()
+
+    return OrchestratedPlanRead(
+        plan_id=plan.id,
+        origin=orchestrated.origin,
+        origin_resolved=orchestrated.origin_resolved,
+        stops=[
+            OrchestratedStopRead(
+                name=stop.name,
+                location=stop.location,
+                address=stop.address,
+                opening_hours=stop.opening_hours,
+                phone=stop.phone,
+                source_url=stop.source_url,
+                reservation_url=stop.reservation_url,
+                category=stop.category,
+                estimated_cost=stop.estimated_cost,
+                duration_minutes=stop.duration_minutes,
+                start_time=stop.start_time,
+                end_time=stop.end_time,
+                description=stop.description,
+                contact_hint=stop.contact_hint,
+                actions=[
+                    VenueActionRead(
+                        action_type=spec.action_type.value,
+                        label=spec.label,
+                        target_url=spec.target_url,
+                        description=spec.description,
+                    )
+                    for spec in stop.actions
+                ],
+            )
+            for stop in orchestrated.stops
+        ],
+        legs=[
+            OrchestratedLegRead(
+                from_label=leg.from_label,
+                to_label=leg.to_label,
+                transition=PlanTransitionRead.from_domain(leg.transition),
+                selected_option_id=leg.selected_option_id,
+                reason=leg.reason,
+                preference_honoured=leg.preference_honoured,
+                preference_note=leg.preference_note,
+                alternatives=[MobilityOptionRead.from_domain(o) for o in leg.alternatives],
+                all_options=[MobilityOptionRead.from_domain(o) for o in leg.all_options],
+            )
+            for leg in orchestrated.legs
+        ],
+        feasibility=ItineraryFeasibilityRead.from_domain(feasibility),
+        day_start=orchestrated.day_start,
+        day_end=orchestrated.stops[-1].end_time if orchestrated.stops else None,
+        transport_preference=orchestrated.transport_preference,
+        transport_preference_honoured=orchestrated.transport_preference_honoured,
+        transport_preference_note=orchestrated.transport_preference_note,
+        is_valid=orchestrated.is_valid,
+        coverage=(
+            IntentCoverageRead(
+                status=orchestrated.coverage.status.value,
+                covered_count=sum(1 for i in orchestrated.coverage.items if i.is_covered),
+                total_count=orchestrated.coverage.count(),
+                items=[
+                    RequirementCoverageRead(
+                        slug=item.requirement.slug,
+                        label=item.requirement.label,
+                        kind=item.requirement.kind.value,
+                        is_covered=item.is_covered,
+                        status=item.status.value,
+                        supported_by=list(item.supporting_stops),
+                        evidence_terms=[match.term for match in item.matches],
+                    )
+                    for item in orchestrated.coverage.items
+                ],
+            )
+            if orchestrated.coverage is not None
+            else None
+        ),
+        conflicts=[
+            PlanningConflictRead(
+                kind=conflict.kind,
+                message=conflict.message,
+                requirement_slug=conflict.requirement_slug,
+                requirement_label=conflict.requirement_label,
+            )
+            for conflict in orchestrated.conflicts
+        ],
+        removed_stops=[
+            RemovedStopRead(name=stop.name, reason=stop.reason)
+            for stop in orchestrated.removed_stops
+        ],
+    )
 
 
 @router.post("/plans/{plan_id}/transitions/proposed", response_model=PlanTransitionsResponse)

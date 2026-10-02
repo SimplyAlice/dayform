@@ -56,6 +56,7 @@ class SqlAlchemyPlanRepository(PlanRepository):
             row.context.end_time = plan.context.end_time
             row.context.group_size = plan.context.group_size
             row.context.transport_mode = plan.context.transport_mode
+            row.context.origin = plan.context.origin
         row.constraints = [_constraint_to_model(item) for item in plan.constraints]
         await self._session.flush()
         await self._session.refresh(row, attribute_names=["context", "constraints", "items", "updated_at"])
@@ -138,7 +139,8 @@ def _plan_to_model(plan: Plan) -> PlanModel:
 
 def _context_to_model(context: PlanningContext) -> PlanningContextModel:
     return PlanningContextModel(plan_id=context.plan_id, location=context.location, start_time=context.start_time,
-                                end_time=context.end_time, group_size=context.group_size, transport_mode=context.transport_mode)
+                                end_time=context.end_time, group_size=context.group_size, transport_mode=context.transport_mode,
+                                origin=context.origin)
 
 
 def _constraint_to_model(item: Constraint) -> ConstraintModel:
@@ -165,6 +167,7 @@ def _to_plan(row: PlanModel) -> Plan:
     context = None if row.context is None else PlanningContext(
         plan_id=row.id, location=row.context.location, start_time=row.context.start_time, end_time=row.context.end_time,
         group_size=row.context.group_size, transport_mode=row.context.transport_mode,
+        origin=row.context.origin,
     )
     return Plan(id=row.id, user_id=row.user_id, intention=row.intention, title=row.title, status=PlanStatus(row.status),
                 created_at=row.created_at, updated_at=row.updated_at, context=context,

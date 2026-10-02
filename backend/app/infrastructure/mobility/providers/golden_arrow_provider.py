@@ -16,7 +16,7 @@ from app.domain.entities.mobility.models import (
     ProviderCapability,
 )
 from app.domain.ports.mobility.ports import MobilityProviderPort
-from app.infrastructure.mobility.geo import estimate_network_distance_km
+from app.infrastructure.mobility.geo import address_serves_place, estimate_network_distance_km
 
 GABS_HUBS = [
     "cape town cbd",
@@ -58,11 +58,10 @@ class GoldenArrowProvider(MobilityProviderPort):
         )
 
     async def get_options(self, requirement: MobilityRequirement) -> list[MobilityOption]:
-        orig = requirement.origin.strip().lower()
-        dest = requirement.destination.strip().lower()
-
-        has_orig = any(hub in orig or orig in hub for hub in GABS_HUBS)
-        has_dest = any(hub in dest or dest in hub for hub in GABS_HUBS)
+        # GABS only claims a journey when both ends are served by a GABS hub. Matching on the
+        # city name would claim a bus route for every Cape Town address.
+        has_orig = any(address_serves_place(requirement.origin, hub) for hub in GABS_HUBS)
+        has_dest = any(address_serves_place(requirement.destination, hub) for hub in GABS_HUBS)
 
         if not (has_orig and has_dest):
             return []

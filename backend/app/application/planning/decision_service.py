@@ -40,6 +40,19 @@ class PlanningDecisionService:
                 opening_hours=c.opening_hours,
                 freshness=c.freshness,
                 verified_at=c.verified_at,
+                # Business contact and booking data must survive this rebuild,
+                # otherwise a proposed stop cannot offer real actions.
+                source_url=c.source_url,
+                phone=c.phone,
+                reservation_url=c.reservation_url,
+                # Provider evidence must survive too, or intent coverage has
+                # nothing real to check a requirement against.
+                description=c.description,
+                metadata=dict(c.metadata),
+                # Coordinates must survive the rebuild so the area a candidate was
+                # judged against can be shown and re-checked further downstream.
+                latitude=c.latitude,
+                longitude=c.longitude,
                 attribution=c.attribution or attr,
             )
             for c in result.candidates

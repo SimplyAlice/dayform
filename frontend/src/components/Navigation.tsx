@@ -6,8 +6,8 @@ interface NavigationProps {
   isPlanning: boolean;
   onNewPlan: () => void;
   onFocusInput: () => void;
-  viewMode: 'landing' | 'workspace';
-  onSwitchView?: (mode: 'landing' | 'workspace') => void;
+  viewMode: 'landing' | 'workspace' | 'library';
+  onSwitchView?: (mode: 'landing' | 'workspace' | 'library') => void;
 }
 
 export const Navigation: React.FC<NavigationProps> = ({
@@ -53,7 +53,7 @@ export const Navigation: React.FC<NavigationProps> = ({
 
   const handleLinkClick = (anchorId: string) => {
     setMobileMenuOpen(false);
-    if (viewMode === 'workspace' && onSwitchView) {
+    if ((viewMode === 'workspace' || viewMode === 'library') && onSwitchView) {
       onSwitchView('landing');
       setTimeout(() => {
         const elem = document.getElementById(anchorId);
@@ -68,9 +68,11 @@ export const Navigation: React.FC<NavigationProps> = ({
 
   const handlePlanClick = () => {
     setMobileMenuOpen(false);
-    if (viewMode === 'workspace' && onSwitchView) {
-      // In workspace, user is already planning
+    if (viewMode === 'workspace') {
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (viewMode === 'library' && onSwitchView) {
+      onSwitchView('landing');
+      setTimeout(() => onFocusInput(), 100);
     } else {
       onFocusInput();
     }
@@ -79,13 +81,15 @@ export const Navigation: React.FC<NavigationProps> = ({
   const handleBrandClick = () => {
     setMobileMenuOpen(false);
     if (hasActivePlan) {
-      // Prompt or switch
       if (onSwitchView) {
         onSwitchView('landing');
       } else {
         onNewPlan();
       }
     } else {
+      if (viewMode !== 'landing' && onSwitchView) {
+        onSwitchView('landing');
+      }
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   };
@@ -129,10 +133,20 @@ export const Navigation: React.FC<NavigationProps> = ({
             >
               Capabilities
             </button>
+            <button
+              type="button"
+              className={`nav-link-item ${viewMode === 'library' ? 'active' : ''}`}
+              onClick={() => {
+                setMobileMenuOpen(false);
+                onSwitchView?.('library');
+              }}
+            >
+              Plan Library
+            </button>
             {hasActivePlan && (
               <button
                 type="button"
-                className={`nav-link-item active-plan-link ${viewMode === 'workspace' ? 'active' : ''}`}
+                className="nav-link-item active-plan-link"
                 onClick={() => onSwitchView?.('workspace')}
               >
                 <span className="active-plan-dot" />
@@ -143,10 +157,12 @@ export const Navigation: React.FC<NavigationProps> = ({
 
           {/* Right Action Cluster */}
           <div className="nav-right">
-            <div className="nav-status-indicator" title="Connected to Dayform Planning Engine">
-              <span className="live-status-dot" />
-              <span className="live-status-label">Engine ready</span>
-            </div>
+            {viewMode === 'landing' && (
+              <div className="nav-status-indicator" title="Connected to Dayform Planning Engine">
+                <span className="live-status-dot" />
+                <span className="live-status-label">Engine ready</span>
+              </div>
+            )}
 
             {hasActivePlan ? (
               <button
@@ -225,6 +241,17 @@ export const Navigation: React.FC<NavigationProps> = ({
                 onClick={() => handleLinkClick('capabilities')}
               >
                 <span>Capabilities</span>
+                <IconArrowRight size={16} />
+              </button>
+              <button
+                type="button"
+                className="mobile-nav-item"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onSwitchView?.('library');
+                }}
+              >
+                <span>Plan Library</span>
                 <IconArrowRight size={16} />
               </button>
               {hasActivePlan && (
