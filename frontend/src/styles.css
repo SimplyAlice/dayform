@@ -121,7 +121,7 @@ body {
   background-color: var(--bg-canvas);
   color: var(--text-primary);
   line-height: 1.55;
-  overflow-x: hidden;
+  overflow-x: clip;
 }
 
 /* Product Canvas */
@@ -3230,7 +3230,7 @@ body {
 
 .story-chapter-block:last-child {
   border-bottom: none;
-  min-height: 50vh;
+  min-height: 75vh;
 }
 
 .story-chapter-block.in-focus {
