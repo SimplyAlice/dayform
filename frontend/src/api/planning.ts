@@ -336,6 +336,16 @@ export async function updatePlan(
 }
 
 /**
+ * Deletes an existing plan permanently.
+ * Endpoint: DELETE /api/v1/planning/plans/{plan_id}
+ */
+export async function deletePlan(planId: string): Promise<void> {
+  return apiClient<void>(`/planning/plans/${planId}`, {
+    method: 'DELETE',
+  });
+}
+
+/**
  * Lists all saved plans for the authenticated user.
  * Endpoint: GET /api/v1/planning/plans
  */

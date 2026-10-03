@@ -2205,7 +2205,7 @@
 .df-itinerary-scene .df-origin-strip,
 .df-itinerary-scene .df-order-note,
 .df-itinerary-scene > .transport-leg-container {
-  margin-left: var(--timeline-content-indent, 184px) !important;
+  margin-left: var(--timeline-content-indent, 112px) !important;
   width: auto !important;
   box-sizing: border-box !important;
 }
@@ -2221,7 +2221,7 @@
   .df-itinerary-scene .df-origin-strip,
   .df-itinerary-scene .df-order-note,
   .df-itinerary-scene > .transport-leg-container {
-    margin-left: var(--timeline-content-indent, 76px) !important;
+    margin-left: var(--timeline-content-indent, 62px) !important;
   }
 
   .saved-plan-container .saved-origin-leg-wrap,
@@ -3537,6 +3537,14 @@
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  position: relative;
+}
+
+.library-card-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .library-status-badge {
@@ -3559,6 +3567,214 @@
   gap: 5px;
   font-size: 0.78rem;
   color: rgba(13, 9, 20, 0.55);
+}
+
+.library-card-actions-wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.btn-card-overflow {
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: rgba(13, 9, 20, 0.4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+
+.btn-card-overflow:hover {
+  color: var(--color-ink);
+  background: rgba(13, 9, 20, 0.05);
+  border-color: rgba(13, 9, 20, 0.1);
+}
+
+.btn-card-overflow:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 1px;
+}
+
+.card-overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  background: #ffffff;
+  border: 1px solid rgba(13, 9, 20, 0.12);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(13, 9, 20, 0.12);
+  padding: 4px;
+  min-width: 120px;
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--color-ink);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.card-menu-item:hover {
+  background: rgba(13, 9, 20, 0.05);
+}
+
+.card-menu-item.is-danger {
+  color: #c5221f;
+}
+
+.card-menu-item.is-danger:hover {
+  background: rgba(197, 34, 31, 0.08);
+  color: #b31412;
+}
+
+.library-card-rename-form {
+  margin: 0 0 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.library-rename-input {
+  font-family: var(--font-display, serif);
+  font-size: 1.15rem;
+  font-weight: 600;
+  padding: 6px 10px;
+  border: 1px solid rgba(13, 9, 20, 0.25);
+  border-radius: 6px;
+  outline: none;
+  background: #ffffff;
+  color: var(--color-ink);
+  transition: border-color 0.15s, box-shadow 0.15s;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.library-rename-input:focus {
+  border-color: var(--color-ink);
+  box-shadow: 0 0 0 2px rgba(13, 9, 20, 0.08);
+}
+
+.library-rename-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.btn-rename-save {
+  background: var(--color-ink);
+  color: #ffffff;
+  border: 1px solid var(--color-ink);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.btn-rename-save:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btn-rename-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-rename-cancel {
+  background: transparent;
+  color: rgba(13, 9, 20, 0.65);
+  border: 1px solid rgba(13, 9, 20, 0.15);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-rename-cancel:hover:not(:disabled) {
+  background: rgba(13, 9, 20, 0.04);
+}
+
+.library-card-delete-prompt {
+  background: rgba(197, 34, 31, 0.05);
+  border: 1px solid rgba(197, 34, 31, 0.2);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 0 0 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.delete-prompt-message {
+  font-size: 0.8rem;
+  color: #a51d24;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.delete-prompt-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-delete-confirm {
+  background: #c5221f;
+  color: #ffffff;
+  border: none;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-delete-confirm:hover:not(:disabled) {
+  background: #a51d24;
+}
+
+.btn-delete-confirm:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.btn-delete-cancel {
+  background: transparent;
+  color: rgba(13, 9, 20, 0.7);
+  border: 1px solid rgba(13, 9, 20, 0.18);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.btn-delete-cancel:hover:not(:disabled) {
+  background: rgba(13, 9, 20, 0.04);
+}
+
+.library-card.is-confirming-delete {
+  border-color: rgba(197, 34, 31, 0.3);
 }
 
 .library-card-title {

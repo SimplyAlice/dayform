@@ -90,9 +90,9 @@
   --transition-spring: 360ms cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* Timeline Architecture & Shared Content Indentation */
-  --timeline-anchor-col: 104px;
-  --timeline-rail-col: 36px;
-  --timeline-grid-gap: 22px;
+  --timeline-anchor-col: 64px;
+  --timeline-rail-col: 20px;
+  --timeline-grid-gap: 14px;
   --timeline-content-indent: calc(var(--timeline-anchor-col) + var(--timeline-rail-col) + (var(--timeline-grid-gap) * 2));
 }
 
@@ -1816,7 +1816,7 @@ body {
 
 .journey-num-watermark {
   font-family: var(--font-display);
-  font-size: 2.8rem;
+  font-size: 2.2rem;
   font-weight: 800;
   color: rgba(255, 255, 255, 0.09);
   line-height: 1;
@@ -4383,9 +4383,9 @@ body {
 
 @media (max-width: 768px) {
   :root {
-    --timeline-anchor-col: 48px;
-    --timeline-rail-col: 12px;
-    --timeline-grid-gap: 8px;
+    --timeline-anchor-col: 40px;
+    --timeline-rail-col: 10px;
+    --timeline-grid-gap: 6px;
     --timeline-content-indent: calc(var(--timeline-anchor-col) + var(--timeline-rail-col) + (var(--timeline-grid-gap) * 2));
   }
 
