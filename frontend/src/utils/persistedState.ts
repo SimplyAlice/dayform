@@ -11,7 +11,11 @@ import type { ConstraintRead, DecisionCandidateRead, PlanItemRead, PlanRead } fr
 import type { ProposedItinerary, ProposedItineraryItem } from './itineraryBuilder';
 
 export const AUTH_STORAGE_KEY = 'dayform_auth_session_v1';
-export const LEGACY_AUTH_KEYS = ['dayform_access_token', 'opsos_access_token'] as const;
+export const LEGACY_AUTH_KEYS = [
+  'dayform_access_token',
+  'opsos_access_token',
+  'careeros_access_token',
+] as const;
 export const AUTH_SCHEMA_VERSION = 1;
 
 export const WORKSPACE_STORAGE_KEY = 'dayform_workspace_state_v1';
@@ -135,6 +139,14 @@ export function parseJwtPayload(token: unknown): JwtPayloadClaims | null {
   }
 }
 
+export function extractJwtSubject(token: unknown): string | null {
+  const payload = parseJwtPayload(token);
+  if (!payload || !isNonEmptyString(payload.sub)) {
+    return null;
+  }
+  return payload.sub.trim();
+}
+
 /**
  * Validates that a token is a well-formed, non-expired JWT with a valid subject claim.
  */
@@ -171,8 +183,9 @@ export function loadPersistedAuthSession(
 ): PersistedAuthSessionV1 | null {
   if (!storage) return null;
 
-  // Always clean up obsolete milestone key if present
+  // Always clean up obsolete milestone keys if present
   safeRemoveItem('opsos_access_token', storage);
+  safeRemoveItem('careeros_access_token', storage);
 
   const rawSession = safeGetItem(AUTH_STORAGE_KEY, storage);
   if (rawSession !== null) {

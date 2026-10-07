@@ -1,4 +1,4 @@
-import { apiClient } from './client';
+import { apiClient } from './client.ts';
 import type {
   CreatePlanFromIntentRequest,
   DecisionCandidateRead,

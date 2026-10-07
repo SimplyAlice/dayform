@@ -182,12 +182,10 @@ export const App: React.FC = () => {
     try {
       // 1. Create plan aggregate from intent (POST /api/v1/planning/requests)
       const plan = await createPlanFromIntent(intent, origin, startTime, transportPreference);
-      setCurrentPlan(plan);
 
       // 2. Fetch tailored recommendations (GET /api/v1/planning/plans/{id}/recommendations)
       const recsResponse = await getPlanRecommendations(plan.id);
       const allRecs = recsResponse.candidates || [];
-      setCandidates(allRecs);
 
       // 3. Extract budget ceiling from constraints if present
       const budgetConstraint = plan.constraints?.find((c) => c.type === 'budget_max');
@@ -198,13 +196,25 @@ export const App: React.FC = () => {
       const groupSize = plan.context?.group_size || 1;
 
       // 4. Assemble coherent proposed itinerary ("Here's what I'd do")
-      const proposal = buildProposedItinerary(allRecs, budgetMax, intent, groupSize, plan.understanding, recsResponse.trade_off_summary);
+      const proposal = buildProposedItinerary(
+        allRecs,
+        budgetMax,
+        intent,
+        groupSize,
+        plan.understanding,
+        recsResponse.trade_off_summary
+      );
+
+      setCurrentPlan(plan);
+      setCandidates(allRecs);
       setProposedItinerary(proposal);
 
       // The itinerary is the payoff, so that is where the reader arrives.
       moveToScene(4, 150);
     } catch (err: unknown) {
       console.error('Planning error:', err);
+      setCurrentPlan(null);
+      setProposedItinerary(null);
       const msg = err instanceof Error ? err.message : 'Failed to create plan.';
       setErrorMessage(msg);
     } finally {
@@ -638,7 +648,7 @@ export const App: React.FC = () => {
             )}
 
             {/* Error Recovery State in Workspace (Phase 9) */}
-            {!isPlanning && errorMessage && !currentPlan && (
+            {!isPlanning && errorMessage && (!currentPlan || (!proposedItinerary && !isConfirmed)) && (
               <div className="workspace-error-state animate-fade-in">
                 <div className="error-icon-box">
                   <IconAlertCircle size={28} />

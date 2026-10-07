@@ -19,6 +19,7 @@ import {
 import type { DecisionCandidateRead, PlanRead } from '../types/planning.ts';
 import type { ProposedItinerary } from './itineraryBuilder.ts';
 import { apiClient, ensureAuthToken } from '../api/client.ts';
+import { createPlanFromIntent, getPlanRecommendations } from '../api/planning.ts';
 
 class MemoryStorage implements StorageLike {
   private store = new Map<string, string>();
@@ -505,5 +506,345 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       globalThis.fetch = originalFetch;
     }
   });
-});
 
+  it('registers a fresh demo user when initial login returns 401 and persists the session', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const freshJwt = createMockJwt({ sub: 'brand-new-user', exp: nowSec + 900 });
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      const sequence: string[] = [];
+      let loginCalls = 0;
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/login')) {
+          loginCalls += 1;
+          sequence.push(`login-${loginCalls}`);
+          if (loginCalls === 1) {
+            return new Response(JSON.stringify({ detail: 'Invalid email or password.' }), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(
+            JSON.stringify({ access_token: freshJwt, refresh_token: 'fresh-refresh-1' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/auth/register')) {
+          sequence.push('register');
+          return new Response(
+            JSON.stringify({ id: 'brand-new-user', email: 'demo@dayform.local' }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+
+      const token = await ensureAuthToken(false);
+      assert.equal(token, freshJwt);
+      assert.deepEqual(sequence, ['login-1', 'register', 'login-2']);
+      assert.equal(storage.has(AUTH_STORAGE_KEY), true);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('uses refresh token when access token is expired (refresh success) and falls back to login on refresh failure', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiredJwt = createMockJwt({ sub: 'user-refresh', exp: nowSec - 300 });
+    const refreshedJwt = createMockJwt({ sub: 'user-refresh', exp: nowSec + 900 });
+    const fallbackLoginJwt = createMockJwt({ sub: 'user-fallback', exp: nowSec + 900 });
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      // Part 1: Refresh succeeds
+      savePersistedAuthSession(expiredJwt, 'valid-refresh-tok', storage, Date.now() - 600_000);
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/refresh')) {
+          return new Response(
+            JSON.stringify({ access_token: refreshedJwt, refresh_token: 'rotated-refresh-tok' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 500 });
+      }) as typeof fetch;
+
+      const tokenFromRefresh = await ensureAuthToken(false);
+      assert.equal(tokenFromRefresh, refreshedJwt);
+
+      // Part 2: Refresh fails (401) -> falls back to /auth/login
+      savePersistedAuthSession(expiredJwt, 'revoked-refresh-tok', storage, Date.now() - 600_000);
+      const calls: string[] = [];
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/refresh')) {
+          calls.push('refresh');
+          return new Response(
+            JSON.stringify({ detail: 'Refresh token is invalid, expired, or has already been used.' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/auth/login')) {
+          calls.push('login');
+          return new Response(
+            JSON.stringify({ access_token: fallbackLoginJwt, refresh_token: 'new-refresh-tok' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 500 });
+      }) as typeof fetch;
+
+      const tokenFromFallback = await ensureAuthToken(false);
+      assert.equal(tokenFromFallback, fallbackLoginJwt);
+      assert.deepEqual(calls, ['refresh', 'login']);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('clears persisted auth session and throws when 401 is followed by a failed retry', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const initialJwt = createMockJwt({ sub: 'user-1', exp: nowSec + 600 });
+    const retryJwt = createMockJwt({ sub: 'user-1', exp: nowSec + 900 });
+
+    savePersistedAuthSession(initialJwt, null, storage, Date.now());
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/login')) {
+          return new Response(
+            JSON.stringify({ access_token: retryJwt, refresh_token: 'ref' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({ detail: 'Access token is invalid or expired.' }),
+          { status: 401, headers: { 'Content-Type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      await assert.rejects(
+        () => apiClient('/planning/plans'),
+        /Access token is invalid or expired\./
+      );
+      assert.equal(storage.has(AUTH_STORAGE_KEY), false);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('deduplicates multiple simultaneous API requests during auth recovery and clears stale user workspace', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const oldUserJwt = createMockJwt({ sub: 'old-deleted-user', exp: nowSec + 600 });
+    const newUserJwt = createMockJwt({ sub: 'new-recreated-user', exp: nowSec + 900 });
+
+    savePersistedAuthSession(oldUserJwt, null, storage, Date.now());
+    savePersistedWorkspaceState(
+      {
+        submittedIntent: 'Old plan from deleted user',
+        isConfirmed: true,
+        currentPlan: createSamplePlan(),
+        candidates: [],
+        proposedItinerary: null,
+      },
+      storage,
+      Date.now()
+    );
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      let loginCount = 0;
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/auth/login')) {
+          loginCount += 1;
+          await new Promise((r) => setTimeout(r, 15));
+          return new Response(
+            JSON.stringify({ access_token: newUserJwt, refresh_token: 'new-ref' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        if (headers.Authorization === `Bearer ${oldUserJwt}`) {
+          return new Response(
+            JSON.stringify({ detail: 'Token does not correspond to an existing user.' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        return new Response(JSON.stringify({ ok: true, url }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const [res1, res2, res3] = await Promise.all([
+        apiClient<{ ok: boolean }>('/planning/plans/1'),
+        apiClient<{ ok: boolean }>('/planning/plans/2'),
+        apiClient<{ ok: boolean }>('/planning/plans/3'),
+      ]);
+
+      assert.equal(res1.ok, true);
+      assert.equal(res2.ok, true);
+      assert.equal(res3.ok, true);
+      assert.equal(loginCount, 1);
+      // Workspace state belonging to the old deleted user ID was automatically cleaned up
+      assert.equal(storage.has(WORKSPACE_STORAGE_KEY), false);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('completes full plan creation (createPlanFromIntent + getPlanRecommendations) after recovering from stale dayform_access_token and cannot be bypassed by custom Authorization headers', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const staleLegacyToken = createMockJwt({ sub: 'stale-user', exp: nowSec - 3600 });
+    const validToken = createMockJwt({ sub: 'active-user', exp: nowSec + 900 });
+
+    storage.setItem('dayform_access_token', staleLegacyToken);
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      const samplePlan = createSamplePlan();
+      const sampleCand = createSampleCandidate();
+      const seenAuthOnPlanning: string[] = [];
+
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+
+        if (url.endsWith('/auth/login')) {
+          return new Response(
+            JSON.stringify({ access_token: validToken, refresh_token: 'active-refresh' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url.endsWith('/planning/requests')) {
+          seenAuthOnPlanning.push(headers.Authorization);
+          return new Response(JSON.stringify(samplePlan), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.endsWith(`/planning/plans/${samplePlan.id}/recommendations`)) {
+          seenAuthOnPlanning.push(headers.Authorization);
+          return new Response(
+            JSON.stringify({
+              data_source: 'live',
+              is_live: true,
+              candidates: [sampleCand],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url.endsWith('/planning/custom-header-test')) {
+          seenAuthOnPlanning.push(headers.Authorization);
+          return new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+
+      const createdPlan = await createPlanFromIntent('Coffee in Sea Point');
+      const recs = await getPlanRecommendations(createdPlan.id);
+
+      // Verify custom stale Authorization header cannot bypass apiClient's authoritative token
+      await apiClient('/planning/custom-header-test', {
+        headers: { Authorization: `Bearer ${staleLegacyToken}` },
+      });
+
+      assert.equal(createdPlan.id, samplePlan.id);
+      assert.equal(recs.candidates.length, 1);
+      assert.deepEqual(seenAuthOnPlanning, [
+        `Bearer ${validToken}`,
+        `Bearer ${validToken}`,
+        `Bearer ${validToken}`,
+      ]);
+      assert.equal(storage.has('dayform_access_token'), false);
+      assert.equal(storage.has(AUTH_STORAGE_KEY), true);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
