@@ -44,6 +44,7 @@ export interface PersistedAuthSessionV1 {
 export interface PersistedWorkspaceStateV1 {
   version: typeof WORKSPACE_SCHEMA_VERSION;
   savedAt: number;
+  userId?: string | null;
   submittedIntent: string;
   isConfirmed: boolean;
   currentPlan: PlanRead;
@@ -393,9 +394,33 @@ export function validateProposedItinerary(value: unknown): ProposedItinerary | n
   return value as unknown as ProposedItinerary;
 }
 
+export function extractActiveUserIdFromStorage(
+  storage: StorageLike | null = getDefaultStorage()
+): string | null {
+  if (!storage) return null;
+  const rawSession = safeGetItem(AUTH_STORAGE_KEY, storage);
+  if (rawSession !== null) {
+    try {
+      const parsed: unknown = JSON.parse(rawSession);
+      if (isPlainObject(parsed) && isNonEmptyString(parsed.accessToken)) {
+        const sub = extractJwtSubject(parsed.accessToken);
+        if (sub) return sub;
+      }
+    } catch {
+      // Ignore malformed auth session here
+    }
+  }
+  const legacyToken = safeGetItem('dayform_access_token', storage);
+  if (legacyToken !== null) {
+    return extractJwtSubject(legacyToken);
+  }
+  return null;
+}
+
 export function loadPersistedWorkspaceState(
   storage: StorageLike | null = getDefaultStorage(),
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  expectedUserId?: string | null
 ): PersistedWorkspaceStateV1 | null {
   if (!storage) return null;
 
@@ -424,6 +449,16 @@ export function loadPersistedWorkspaceState(
     }
 
     if (nowMs - parsed.savedAt > MAX_WORKSPACE_AGE_MS) {
+      safeRemoveItem(WORKSPACE_STORAGE_KEY, storage);
+      return null;
+    }
+
+    const savedUserId = isNonEmptyString(parsed.userId) ? parsed.userId.trim() : null;
+    const activeUserId = isNonEmptyString(expectedUserId)
+      ? expectedUserId.trim()
+      : extractActiveUserIdFromStorage(storage);
+
+    if (savedUserId && activeUserId && savedUserId !== activeUserId) {
       safeRemoveItem(WORKSPACE_STORAGE_KEY, storage);
       return null;
     }
@@ -472,6 +507,7 @@ export function loadPersistedWorkspaceState(
     return {
       version: WORKSPACE_SCHEMA_VERSION,
       savedAt: parsed.savedAt,
+      userId: savedUserId ?? activeUserId ?? null,
       submittedIntent: parsed.submittedIntent,
       isConfirmed: parsed.isConfirmed,
       currentPlan,
@@ -497,9 +533,14 @@ export function savePersistedWorkspaceState(
     return false;
   }
 
+  const resolvedUserId = isNonEmptyString(state.userId)
+    ? state.userId.trim()
+    : extractActiveUserIdFromStorage(storage);
+
   const envelope: PersistedWorkspaceStateV1 = {
     version: WORKSPACE_SCHEMA_VERSION,
     savedAt: nowMs,
+    userId: resolvedUserId ?? null,
     submittedIntent: state.submittedIntent,
     isConfirmed: Boolean(state.isConfirmed),
     currentPlan: validPlan,

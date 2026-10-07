@@ -18,7 +18,12 @@ import {
 } from './persistedState.ts';
 import type { DecisionCandidateRead, PlanRead } from '../types/planning.ts';
 import type { ProposedItinerary } from './itineraryBuilder.ts';
-import { apiClient, ensureAuthToken } from '../api/client.ts';
+import {
+  apiClient,
+  ensureAuthToken,
+  toUserFriendlyErrorMessage,
+  type ApiError,
+} from '../api/client.ts';
 import { createPlanFromIntent, getPlanRecommendations } from '../api/planning.ts';
 
 class MemoryStorage implements StorageLike {
@@ -633,7 +638,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
     }
   });
 
-  it('clears persisted auth session and throws when 401 is followed by a failed retry', async () => {
+  it('clears persisted auth session and throws user-friendly error without infinite loop when 401 persists after retry', async () => {
     const storage = new MemoryStorage();
     const nowSec = Math.floor(Date.now() / 1000);
     const initialJwt = createMockJwt({ sub: 'user-1', exp: nowSec + 600 });
@@ -651,24 +656,40 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
         writable: true,
       });
 
+      let planningCalls = 0;
+      let loginCalls = 0;
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
         if (url.endsWith('/auth/login')) {
+          loginCalls += 1;
           return new Response(
             JSON.stringify({ access_token: retryJwt, refresh_token: 'ref' }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
           );
         }
+        planningCalls += 1;
         return new Response(
           JSON.stringify({ detail: 'Access token is invalid or expired.' }),
           { status: 401, headers: { 'Content-Type': 'application/json' } }
         );
       }) as typeof fetch;
 
-      await assert.rejects(
-        () => apiClient('/planning/plans'),
-        /Access token is invalid or expired\./
+      let caughtError: ApiError | null = null;
+      try {
+        await apiClient('/planning/plans');
+      } catch (err) {
+        caughtError = err as ApiError;
+      }
+
+      assert.notEqual(caughtError, null);
+      assert.equal(
+        caughtError?.message,
+        "Your session needed refreshing. We've taken care of it — please try again."
       );
+      assert.equal(caughtError?.rawDetail, 'Access token is invalid or expired.');
+      assert.equal(caughtError?.status, 401);
+      assert.equal(planningCalls, 2);
+      assert.equal(loginCalls, 1);
       assert.equal(storage.has(AUTH_STORAGE_KEY), false);
     } finally {
       Object.defineProperty(globalThis, 'window', {
@@ -846,5 +867,217 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       });
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it('recovers when createPlanFromIntent succeeds and getPlanRecommendations returns 401 on first attempt', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const initialToken = createMockJwt({ sub: 'user-step1', exp: nowSec + 600 });
+    const refreshedToken = createMockJwt({ sub: 'user-step1', exp: nowSec + 1200 });
+
+    savePersistedAuthSession(initialToken, null, storage, Date.now());
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      const samplePlan = createSamplePlan();
+      const sampleCand = createSampleCandidate();
+      let recsAttempts = 0;
+
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+
+        if (url.endsWith('/planning/requests')) {
+          return new Response(JSON.stringify(samplePlan), {
+            status: 201,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (url.endsWith(`/planning/plans/${samplePlan.id}/recommendations`)) {
+          recsAttempts += 1;
+          if (recsAttempts === 1) {
+            return new Response(
+              JSON.stringify({ detail: 'Access token is invalid or expired.' }),
+              { status: 401, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+          assert.equal(headers.Authorization, `Bearer ${refreshedToken}`);
+          return new Response(
+            JSON.stringify({
+              data_source: 'live',
+              is_live: true,
+              candidates: [sampleCand],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        if (url.endsWith('/auth/login')) {
+          return new Response(
+            JSON.stringify({ access_token: refreshedToken, refresh_token: 'ref-step2' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+
+      const plan = await createPlanFromIntent('Morning in Sea Point');
+      const recs = await getPlanRecommendations(plan.id);
+      assert.equal(plan.id, samplePlan.id);
+      assert.equal(recsAttempts, 2);
+      assert.equal(recs.candidates.length, 1);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('aborts hung API requests when timeoutMs expires and throws a friendly timeout message', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const validToken = createMockJwt({ sub: 'user-timeout', exp: nowSec + 900 });
+    savePersistedAuthSession(validToken, null, storage, Date.now());
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      globalThis.fetch = ((_input: string | URL | Request, init?: RequestInit) => {
+        return new Promise<Response>((_resolve, reject) => {
+          const sig = init?.signal;
+          if (sig) {
+            if (sig.aborted) {
+              const err = new Error('The operation was aborted.');
+              err.name = 'AbortError';
+              reject(err);
+              return;
+            }
+            sig.addEventListener('abort', () => {
+              const err = new Error('The operation was aborted.');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }
+        });
+      }) as typeof fetch;
+
+      let caughtError: ApiError | null = null;
+      try {
+        await apiClient('/planning/requests', { timeoutMs: 25 });
+      } catch (err) {
+        caughtError = err as ApiError;
+      }
+
+      assert.notEqual(caughtError, null);
+      assert.equal(
+        caughtError?.message,
+        'Dayform is taking a little longer than usual. Please try again.'
+      );
+      assert.equal(caughtError?.status, 408);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('discards workspace state on load when stored userId does not match the active authenticated user', () => {
+    const storage = new MemoryStorage();
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+
+    const oldUserToken = createMockJwt({ sub: 'user-old-111', exp: nowSec + 900 });
+    const newUserToken = createMockJwt({ sub: 'user-new-222', exp: nowSec + 900 });
+
+    savePersistedAuthSession(oldUserToken, null, storage, nowMs);
+    savePersistedWorkspaceState(
+      {
+        submittedIntent: 'Old user workspace',
+        isConfirmed: true,
+        currentPlan: createSamplePlan(),
+        candidates: [],
+        proposedItinerary: null,
+      },
+      storage,
+      nowMs
+    );
+
+    // Same user loads workspace -> succeeds
+    const loadedForOldUser = loadPersistedWorkspaceState(storage, nowMs);
+    assert.notEqual(loadedForOldUser, null);
+    assert.equal(loadedForOldUser?.userId, 'user-old-111');
+
+    // Auth session switches to a different user -> workspace state is discarded and deleted
+    savePersistedAuthSession(newUserToken, null, storage, nowMs);
+    const loadedForNewUser = loadPersistedWorkspaceState(storage, nowMs);
+    assert.equal(loadedForNewUser, null);
+    assert.equal(storage.has(WORKSPACE_STORAGE_KEY), false);
+    assert.equal(storage.clearCalled, false);
+  });
+
+  it('removes expired dayform_auth_session_v1 when no refresh token is present and removes legacy careeros/opsos keys', () => {
+    const storage = new MemoryStorage();
+    const nowMs = Date.now();
+    const nowSec = Math.floor(nowMs / 1000);
+    const expiredJwt = createMockJwt({ sub: 'user-expired', exp: nowSec - 500 });
+
+    storage.setItem('opsos_access_token', 'legacy-opsos');
+    storage.setItem('careeros_access_token', 'legacy-careeros');
+    storage.setItem('custom_user_preference', 'dark');
+    savePersistedAuthSession(expiredJwt, null, storage, nowMs - 600_000);
+
+    const loaded = loadPersistedAuthSession(storage, nowMs);
+    assert.equal(loaded, null);
+    assert.equal(storage.has(AUTH_STORAGE_KEY), false);
+    assert.equal(storage.has('opsos_access_token'), false);
+    assert.equal(storage.has('careeros_access_token'), false);
+    assert.equal(storage.getItem('custom_user_preference'), 'dark');
+    assert.equal(storage.clearCalled, false);
+  });
+
+  it('translates raw technical error strings into clean user-friendly messages', () => {
+    assert.equal(
+      toUserFriendlyErrorMessage('Access token is invalid or expired.', 401),
+      "Your session needed refreshing. We've taken care of it — please try again."
+    );
+    assert.equal(
+      toUserFriendlyErrorMessage('Token does not correspond to an existing user.', 401),
+      "Your session needed refreshing. We've taken care of it — please try again."
+    );
+    assert.equal(
+      toUserFriendlyErrorMessage('Failed to fetch'),
+      'Dayform is taking a little longer than usual. Please try again.'
+    );
+    assert.equal(
+      toUserFriendlyErrorMessage('AbortError: The operation was aborted'),
+      'Dayform is taking a little longer than usual. Please try again.'
+    );
+    assert.equal(
+      toUserFriendlyErrorMessage('Request failed (500)', 500),
+      "We couldn't finish building this plan. Your request is still safe — try again."
+    );
   });
 });

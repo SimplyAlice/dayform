@@ -11,12 +11,22 @@ import {
   extractJwtSubject,
   isValidJwtAccessToken,
   loadPersistedAuthSession,
+  loadPersistedWorkspaceState,
   savePersistedAuthSession,
 } from '../utils/persistedState.ts';
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || '/api/v1';
 
-export const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+
+export interface ApiRequestOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
+export interface ApiError extends Error {
+  status?: number;
+  rawDetail?: string;
+}
 
 const DEMO_CREDENTIALS = {
   email: 'demo@dayform.local',
@@ -27,6 +37,51 @@ let authToken: string | null = null;
 let refreshToken: string | null = null;
 let lastKnownUserId: string | null = null;
 let pendingAuthPromise: Promise<string> | null = null;
+
+/**
+ * Translates raw technical API, auth, or network errors into calm,
+ * user-friendly messages so raw JWT/HTTP strings never surface in the UI.
+ */
+export function toUserFriendlyErrorMessage(rawMessage: string, status?: number): string {
+  const normalized = (rawMessage || '').trim();
+
+  if (
+    status === 401 ||
+    /access token|invalid or expired|existing user|validate credentials|401|unauthorized|authentication failed|malformed access token/i.test(
+      normalized
+    )
+  ) {
+    return "Your session needed refreshing. We've taken care of it — please try again.";
+  }
+
+  if (
+    status === 408 ||
+    status === 502 ||
+    status === 503 ||
+    status === 504 ||
+    /took too long|taking a little longer|timeout|timed out|aborted|aborterror|unable to connect|failed to fetch|networkerror|load failed/i.test(
+      normalized
+    )
+  ) {
+    return 'Dayform is taking a little longer than usual. Please try again.';
+  }
+
+  if ((status && status >= 500) || /^request failed \(\d+\)$/i.test(normalized) || !normalized) {
+    return "We couldn't finish building this plan. Your request is still safe — try again.";
+  }
+
+  return normalized;
+}
+
+function createApiError(rawDetail: string, status?: number): ApiError {
+  const friendly = toUserFriendlyErrorMessage(rawDetail, status);
+  const error = new Error(friendly) as ApiError;
+  error.rawDetail = rawDetail;
+  if (status !== undefined) {
+    error.status = status;
+  }
+  return error;
+}
 
 function hasStorageAvailable(): boolean {
   try {
@@ -59,9 +114,12 @@ async function fetchWithTimeout(
     });
   } catch (err: unknown) {
     if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error('The planning service took too long to respond. Please try again.');
+      throw createApiError('The planning service took too long to respond.', 408);
     }
-    throw err;
+    if (err instanceof Error) {
+      throw createApiError(err.message);
+    }
+    throw createApiError('Unable to connect to API backend.');
   } finally {
     clearTimeout(timer);
   }
@@ -93,7 +151,7 @@ function persistTokens(newAccessToken: unknown, newRefreshToken?: unknown): stri
     clearPersistedAuthSession();
     authToken = null;
     refreshToken = null;
-    throw new Error('Authentication response did not include a valid access token.');
+    throw createApiError('Authentication response did not include a valid access token.', 401);
   }
 
   const cleanAccess = newAccessToken.trim();
@@ -102,13 +160,17 @@ function persistTokens(newAccessToken: unknown, newRefreshToken?: unknown): stri
     clearPersistedAuthSession();
     authToken = null;
     refreshToken = null;
-    throw new Error('Authentication response returned a malformed access token.');
+    throw createApiError('Authentication response returned a malformed access token.', 401);
   }
 
   // If the backend database was reset/reseeded and issued a different user UUID,
   // any persisted workspace plan ID from the old user is no longer valid on the server.
   if (lastKnownUserId && lastKnownUserId !== newUserId) {
     clearPersistedWorkspaceState();
+  }
+  // Also validate any workspace state currently in storage against the new userId
+  if (hasStorageAvailable()) {
+    loadPersistedWorkspaceState(undefined, Date.now(), newUserId);
   }
   lastKnownUserId = newUserId;
 
@@ -123,13 +185,20 @@ function persistTokens(newAccessToken: unknown, newRefreshToken?: unknown): stri
   return cleanAccess;
 }
 
-async function tryRefreshSession(tokenToRefresh: string): Promise<string | null> {
+async function tryRefreshSession(
+  tokenToRefresh: string,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<string | null> {
   try {
-    const response = await fetchWithTimeout(`${API_BASE}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: tokenToRefresh }),
-    });
+    const response = await fetchWithTimeout(
+      `${API_BASE}/auth/refresh`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: tokenToRefresh }),
+      },
+      timeoutMs
+    );
     if (!response.ok) {
       return null;
     }
@@ -143,53 +212,67 @@ async function tryRefreshSession(tokenToRefresh: string): Promise<string | null>
   }
 }
 
-async function authenticateDemoUser(): Promise<string> {
+async function authenticateDemoUser(
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+): Promise<string> {
   let response: Response;
   try {
-    response = await fetchWithTimeout(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(DEMO_CREDENTIALS),
-    });
+    response = await fetchWithTimeout(
+      `${API_BASE}/auth/login`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(DEMO_CREDENTIALS),
+      },
+      timeoutMs
+    );
   } catch (netErr) {
     console.error('Network failure during authentication:', netErr);
-    if (netErr instanceof Error && netErr.message.includes('took too long')) {
-      throw netErr;
+    if (netErr instanceof Error) {
+      throw createApiError(netErr.message);
     }
-    throw new Error('Unable to connect to API backend.');
+    throw createApiError('Unable to connect to API backend.');
   }
 
   if (!response.ok) {
     // Try registering demo user first if login failed
     let regRes: Response;
     try {
-      regRes = await fetchWithTimeout(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(DEMO_CREDENTIALS),
-      });
+      regRes = await fetchWithTimeout(
+        `${API_BASE}/auth/register`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(DEMO_CREDENTIALS),
+        },
+        timeoutMs
+      );
     } catch (netErr) {
       console.error('Network failure during demo registration:', netErr);
-      if (netErr instanceof Error && netErr.message.includes('took too long')) {
-        throw netErr;
+      if (netErr instanceof Error) {
+        throw createApiError(netErr.message);
       }
-      throw new Error('Unable to connect to API backend.');
+      throw createApiError('Unable to connect to API backend.');
     }
 
     if (regRes.ok || regRes.status === 409 || regRes.status === 422) {
       let retryLogin: Response;
       try {
-        retryLogin = await fetchWithTimeout(`${API_BASE}/auth/login`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(DEMO_CREDENTIALS),
-        });
+        retryLogin = await fetchWithTimeout(
+          `${API_BASE}/auth/login`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(DEMO_CREDENTIALS),
+          },
+          timeoutMs
+        );
       } catch (netErr) {
         console.error('Network failure during login retry:', netErr);
-        if (netErr instanceof Error && netErr.message.includes('took too long')) {
-          throw netErr;
+        if (netErr instanceof Error) {
+          throw createApiError(netErr.message);
         }
-        throw new Error('Unable to connect to API backend.');
+        throw createApiError('Unable to connect to API backend.');
       }
 
       if (retryLogin.ok) {
@@ -204,7 +287,10 @@ async function authenticateDemoUser(): Promise<string> {
       } catch {
         // body not json
       }
-      throw new Error(`Authentication failed (${retryLogin.status})${errorDetail}`);
+      throw createApiError(
+        `Authentication failed (${retryLogin.status})${errorDetail}`,
+        retryLogin.status
+      );
     }
 
     let regErrorDetail = '';
@@ -214,7 +300,10 @@ async function authenticateDemoUser(): Promise<string> {
     } catch {
       // body not json
     }
-    throw new Error(`Authentication failed during registration (${regRes.status})${regErrorDetail}`);
+    throw createApiError(
+      `Authentication failed during registration (${regRes.status})${regErrorDetail}`,
+      regRes.status
+    );
   }
 
   const data = await response.json();
@@ -223,7 +312,8 @@ async function authenticateDemoUser(): Promise<string> {
 
 export async function ensureAuthToken(
   forceRefresh = false,
-  rejectedToken?: string | null
+  rejectedToken?: string | null,
+  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<string> {
   if (!forceRefresh) {
     syncSessionFromStorage();
@@ -265,7 +355,7 @@ export async function ensureAuthToken(
   pendingAuthPromise = (async () => {
     try {
       if (!forceRefresh && refreshToken) {
-        const refreshed = await tryRefreshSession(refreshToken);
+        const refreshed = await tryRefreshSession(refreshToken, timeoutMs);
         if (refreshed) {
           return refreshed;
         }
@@ -273,7 +363,7 @@ export async function ensureAuthToken(
       clearPersistedAuthSession();
       authToken = null;
       refreshToken = null;
-      return await authenticateDemoUser();
+      return await authenticateDemoUser(timeoutMs);
     } finally {
       pendingAuthPromise = null;
     }
@@ -284,12 +374,13 @@ export async function ensureAuthToken(
 
 export async function apiClient<T>(
   endpoint: string,
-  options: RequestInit = {}
+  options: ApiRequestOptions = {}
 ): Promise<T> {
-  let token = await ensureAuthToken(false);
+  const { timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS, ...requestInit } = options;
+  const token = await ensureAuthToken(false, null, timeoutMs);
 
   const executeRequest = async (bearerToken: string): Promise<Response> => {
-    const incomingHeaders = new Headers(options.headers);
+    const incomingHeaders = new Headers(requestInit.headers);
     const headersRecord: Record<string, string> = {};
     incomingHeaders.forEach((value, key) => {
       if (key.toLowerCase() !== 'authorization' && key.toLowerCase() !== 'content-type') {
@@ -300,10 +391,14 @@ export async function apiClient<T>(
     // Always overwrite Authorization with the authoritative bearer token
     headersRecord.Authorization = `Bearer ${bearerToken}`;
 
-    return fetchWithTimeout(`${API_BASE}${endpoint}`, {
-      ...options,
-      headers: headersRecord,
-    });
+    return fetchWithTimeout(
+      `${API_BASE}${endpoint}`,
+      {
+        ...requestInit,
+        headers: headersRecord,
+      },
+      timeoutMs
+    );
   };
 
   let response = await executeRequest(token);
@@ -311,7 +406,7 @@ export async function apiClient<T>(
   // If the persisted token was rejected by the backend (e.g., expired, secret rotated,
   // or demo user recreated after an ephemeral DB reset), clear it and re-authenticate once.
   if (response.status === 401) {
-    const freshToken = await ensureAuthToken(true, token);
+    const freshToken = await ensureAuthToken(true, token, timeoutMs);
     response = await executeRequest(freshToken);
     if (response.status === 401) {
       clearPersistedAuthSession();
@@ -321,22 +416,20 @@ export async function apiClient<T>(
   }
 
   if (!response.ok) {
-    let errorMessage = `Request failed (${response.status})`;
+    let rawErrorMessage = `Request failed (${response.status})`;
     try {
       const errBody = await response.json();
       if (errBody?.detail) {
         if (typeof errBody.detail === 'string') {
-          errorMessage = errBody.detail;
+          rawErrorMessage = errBody.detail;
         } else if (Array.isArray(errBody.detail) && errBody.detail[0]?.msg) {
-          errorMessage = errBody.detail[0].msg;
+          rawErrorMessage = errBody.detail[0].msg;
         }
       }
     } catch {
       // response was not json
     }
-    const error = new Error(errorMessage);
-    (error as unknown as { status: number }).status = response.status;
-    throw error;
+    throw createApiError(rawErrorMessage, response.status);
   }
 
   // Handle 204 No Content

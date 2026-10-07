@@ -20,6 +20,7 @@ import {
   applyPlanAdaptation,
   updatePlan,
 } from './api/planning';
+import { toUserFriendlyErrorMessage } from './api/client';
 import {
   buildProposedItinerary,
   getCategoryIcon,
@@ -52,6 +53,12 @@ export const App: React.FC = () => {
   );
   const [isConfirmed, setIsConfirmed] = useState<boolean>(() => initialWorkspace?.isConfirmed ?? false);
   const [submittedIntent, setSubmittedIntent] = useState<string>(() => initialWorkspace?.submittedIntent ?? '');
+  const [lastIntentRequest, setLastIntentRequest] = useState<{
+    intent: string;
+    origin?: string;
+    startTime?: string;
+    transportPreference?: string;
+  } | null>(null);
 
   const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'library'>(() => {
     if (typeof window !== 'undefined') {
@@ -173,27 +180,30 @@ export const App: React.FC = () => {
     setIsConfirmed(false);
     setProposedItinerary(null);
     setSubmittedIntent(intent);
+    setLastIntentRequest({ intent, origin, startTime, transportPreference });
     clearPersistedWorkspaceState();
     handleSwitchView('workspace');
 
     // Scroll cleanly to the workspace view
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
+    let createdPlan: PlanRead | null = null;
     try {
       // 1. Create plan aggregate from intent (POST /api/v1/planning/requests)
-      const plan = await createPlanFromIntent(intent, origin, startTime, transportPreference);
+      createdPlan = await createPlanFromIntent(intent, origin, startTime, transportPreference);
+      setCurrentPlan(createdPlan);
 
       // 2. Fetch tailored recommendations (GET /api/v1/planning/plans/{id}/recommendations)
-      const recsResponse = await getPlanRecommendations(plan.id);
+      const recsResponse = await getPlanRecommendations(createdPlan.id);
       const allRecs = recsResponse.candidates || [];
 
       // 3. Extract budget ceiling from constraints if present
-      const budgetConstraint = plan.constraints?.find((c) => c.type === 'budget_max');
+      const budgetConstraint = createdPlan.constraints?.find((c) => c.type === 'budget_max');
       const budgetMax = budgetConstraint?.numeric_value
         ? parseFloat(String(budgetConstraint.numeric_value))
         : null;
 
-      const groupSize = plan.context?.group_size || 1;
+      const groupSize = createdPlan.context?.group_size || 1;
 
       // 4. Assemble coherent proposed itinerary ("Here's what I'd do")
       const proposal = buildProposedItinerary(
@@ -201,11 +211,10 @@ export const App: React.FC = () => {
         budgetMax,
         intent,
         groupSize,
-        plan.understanding,
+        createdPlan.understanding,
         recsResponse.trade_off_summary
       );
 
-      setCurrentPlan(plan);
       setCandidates(allRecs);
       setProposedItinerary(proposal);
 
@@ -213,13 +222,67 @@ export const App: React.FC = () => {
       moveToScene(4, 150);
     } catch (err: unknown) {
       console.error('Planning error:', err);
-      setCurrentPlan(null);
+      if (!createdPlan) {
+        setCurrentPlan(null);
+      }
       setProposedItinerary(null);
-      const msg = err instanceof Error ? err.message : 'Failed to create plan.';
-      setErrorMessage(msg);
+      const rawMsg = err instanceof Error ? err.message : '';
+      setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
     } finally {
       setIsPlanning(false);
     }
+  };
+
+  // Recoverable retry when Step 1 or Step 2 of plan creation fails
+  const handleRetryPlanning = async () => {
+    if (currentPlan && !proposedItinerary) {
+      setIsPlanning(true);
+      setErrorMessage(null);
+      try {
+        const recsResponse = await getPlanRecommendations(currentPlan.id);
+        const allRecs = recsResponse.candidates || [];
+        const budgetConstraint = currentPlan.constraints?.find((c) => c.type === 'budget_max');
+        const budgetMax = budgetConstraint?.numeric_value
+          ? parseFloat(String(budgetConstraint.numeric_value))
+          : null;
+        const groupSize = currentPlan.context?.group_size || 1;
+        const proposal = buildProposedItinerary(
+          allRecs,
+          budgetMax,
+          submittedIntent || currentPlan.intention,
+          groupSize,
+          currentPlan.understanding,
+          recsResponse.trade_off_summary
+        );
+        setCandidates(allRecs);
+        setProposedItinerary(proposal);
+        moveToScene(4, 150);
+      } catch (err: unknown) {
+        console.error('Retry recommendations error:', err);
+        const rawMsg = err instanceof Error ? err.message : '';
+        setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
+      } finally {
+        setIsPlanning(false);
+      }
+      return;
+    }
+
+    if (lastIntentRequest) {
+      await handleIntentSubmit(
+        lastIntentRequest.intent,
+        lastIntentRequest.origin,
+        lastIntentRequest.startTime,
+        lastIntentRequest.transportPreference
+      );
+      return;
+    }
+
+    if (submittedIntent) {
+      await handleIntentSubmit(submittedIntent);
+      return;
+    }
+
+    handleStartNew();
   };
 
   // Conversational Plan Modification & Adaptive Planning ("Tweak this plan")
@@ -314,8 +377,8 @@ export const App: React.FC = () => {
       moveToScene(4, 100);
     } catch (err: unknown) {
       console.error('Error adapting plan:', err);
-      const msg = err instanceof Error ? err.message : 'Failed to adapt plan.';
-      setErrorMessage(msg);
+      const rawMsg = err instanceof Error ? err.message : '';
+      setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
     } finally {
       setIsTweaking(false);
     }
@@ -336,8 +399,8 @@ export const App: React.FC = () => {
       moveToScene(6, 100);
     } catch (err: unknown) {
       console.error('Error applying adaptation:', err);
-      const msg = err instanceof Error ? err.message : 'Failed to apply changes.';
-      setErrorMessage(msg);
+      const rawMsg = err instanceof Error ? err.message : '';
+      setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
     } finally {
       setIsSaving(false);
     }
@@ -416,8 +479,8 @@ export const App: React.FC = () => {
       moveToScene(6, 100);
     } catch (err: unknown) {
       console.error('Error confirming plan:', err);
-      const msg = err instanceof Error ? err.message : 'Failed to save plan.';
-      setErrorMessage(msg);
+      const rawMsg = err instanceof Error ? err.message : '';
+      setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
     } finally {
       setIsSaving(false);
     }
@@ -477,6 +540,7 @@ export const App: React.FC = () => {
     setProposedAdaptation(null);
     setErrorMessage(null);
     setSubmittedIntent('');
+    setLastIntentRequest(null);
     handleSwitchView('landing');
     intentInputRef.current?.reset?.();
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -655,13 +719,28 @@ export const App: React.FC = () => {
                 </div>
                 <h3 className="error-title">Couldn’t give shape to this plan</h3>
                 <p className="error-subtitle">{errorMessage}</p>
-                <button
-                  type="button"
-                  className="btn-editorial-primary"
-                  onClick={handleStartNew}
-                >
-                  <span>Try another intention</span>
-                </button>
+                <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  {(currentPlan || submittedIntent || lastIntentRequest) && (
+                    <button
+                      type="button"
+                      className="btn-editorial-primary"
+                      onClick={handleRetryPlanning}
+                    >
+                      <span>Try again</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className={
+                      currentPlan || submittedIntent || lastIntentRequest
+                        ? 'btn-editorial-secondary'
+                        : 'btn-editorial-primary'
+                    }
+                    onClick={handleStartNew}
+                  >
+                    <span>Try another intention</span>
+                  </button>
+                </div>
               </div>
             )}
 
