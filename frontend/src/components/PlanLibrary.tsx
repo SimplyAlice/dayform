@@ -42,10 +42,13 @@ export const PlanLibrary: React.FC<PlanLibraryProps> = ({ onOpenPlan, onNewPlan 
     listPlans()
       .then((data) => {
         if (cancelled) return;
+        const safeList = Array.isArray(data)
+          ? data.filter((p): p is PlanRead => Boolean(p && typeof p.id === 'string'))
+          : [];
         // Sort newest first
-        const sorted = [...data].sort((a, b) => {
-          const tA = new Date(b.created_at || '').getTime();
-          const tB = new Date(a.created_at || '').getTime();
+        const sorted = [...safeList].sort((a, b) => {
+          const tA = new Date(b.created_at || '').getTime() || 0;
+          const tB = new Date(a.created_at || '').getTime() || 0;
           return tA - tB;
         });
         setPlans(sorted);

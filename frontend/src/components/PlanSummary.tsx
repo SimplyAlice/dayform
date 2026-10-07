@@ -102,13 +102,14 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
   };
 
   const [orchestrated, setOrchestrated] = useState<OrchestratedPlanRead | null>(null);
+  const planItems = Array.isArray(plan.items) ? plan.items : [];
   const savedBudgetMax = plan.budget?.budget_maximum == null
     ? null
     : Number(plan.budget.budget_maximum);
   const savedCostSummary = summarizeItineraryCosts(
-    plan.items.map((item) => item.estimated_cost),
-    orchestrated?.feasibility.total_known_transition_cost ?? null,
-    orchestrated?.feasibility.has_unknown_transition_costs ?? plan.items.length > 0,
+    planItems.map((item) => item.estimated_cost),
+    orchestrated?.feasibility?.total_known_transition_cost ?? null,
+    orchestrated?.feasibility?.has_unknown_transition_costs ?? planItems.length > 0,
     savedBudgetMax
   );
   const remaining = savedCostSummary.remainingBudget;
@@ -130,9 +131,9 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
 
   // Orchestrate saved itinerary to resolve transport corridors, timetables, and opening hours
   const fetchOrchestrated = async () => {
-    if (!plan.items || plan.items.length === 0) return;
+    if (planItems.length === 0) return;
     try {
-      const stops = plan.items.map((item) => ({
+      const stops = planItems.map((item) => ({
         name: item.name,
         location: item.location || item.name,
         option_id: item.id,
@@ -151,7 +152,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
         groupSize
       );
       setOrchestrated(res);
-      if (res.legs && res.legs.length > 0) {
+      if (Array.isArray(res?.legs) && res.legs.length > 0) {
         setTransitions(res.legs.map((l) => l.transition));
       }
     } catch (err) {
@@ -164,7 +165,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     fetchHealth();
     fetchTransitions();
     fetchOrchestrated();
-  }, [plan.id, plan.updated_at, plan.items.length]);
+  }, [plan.id, plan.updated_at, planItems.length]);
 
   const legOffset = orchestrated?.origin_resolved ? 1 : 0;
   const originLeg = orchestrated?.origin_resolved ? orchestrated.legs?.[0] : null;
@@ -173,7 +174,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
     setExecutingActionId(action.id);
     try {
       if (action.action_type === 'mark_complete') {
-        const itemActions = planActions?.items.find((i) => i.item_id === itemId);
+        const itemActions = planActions?.items?.find((i) => i.item_id === itemId);
         const isCurrentlyCompleted = itemActions?.item_status === 'completed';
 
         if (isCurrentlyCompleted) {
@@ -236,7 +237,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
 
   const planProgression = planActions?.plan_status || 'ready';
   const completedStopsCount =
-    planActions?.items.filter((i) => i.item_status === 'completed').length || 0;
+    planActions?.items?.filter((i) => i.item_status === 'completed').length || 0;
 
   // The same naming the proposal used, so the plan keeps its identity once saved.
   //
@@ -246,9 +247,9 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
   // leading with, so it wins whenever there is something to derive it from. The
   // stored title is still shown, quietly, because it carries the budget figure
   // the derived name does not.
-  const derivedTitle = planTitle(plan.understanding, plan.items);
-  const savedTitle = plan.items.length > 0 ? derivedTitle : plan.title || derivedTitle;
-  const savedSummary = planSummaryLine(plan.items);
+  const derivedTitle = planTitle(plan.understanding, planItems);
+  const savedTitle = planItems.length > 0 ? derivedTitle : plan.title || derivedTitle;
+  const savedSummary = planSummaryLine(planItems);
   const storedTitle = plan.title && plan.title !== savedTitle ? plan.title : null;
 
   return (
@@ -288,7 +289,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
               <span className="progression-pill completed">Completed</span>
             ) : planProgression === 'in_progress' ? (
               <span className="progression-pill in-progress">
-                In progress · {completedStopsCount} of {plan.items.length} done
+                In progress · {completedStopsCount} of {planItems.length} done
               </span>
             ) : (
               <span className="progression-pill ready">Ready</span>
@@ -432,11 +433,11 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
         <div className="saved-section-header">
           <h3 className="saved-section-title">
             Itinerary stops
-            <span className="stops-count">({plan.items.length})</span>
+            <span className="stops-count">({planItems.length})</span>
           </h3>
         </div>
 
-        {plan.items.length === 0 ? (
+        {planItems.length === 0 ? (
           <div className="empty-itinerary">
             <p>No items in this plan.</p>
           </div>
@@ -454,24 +455,24 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                   <IconNavigation size={14} />
                   <span>Starting out from <strong>{describeOrigin(origin)}</strong></span>
                 </div>
-                {plan.items[0] && (
+                {planItems[0] && (
                   <a
-                    href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(plan.items[0].location || plan.items[0].name)}`}
+                    href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(origin)}&destination=${encodeURIComponent(planItems[0].location || planItems[0].name)}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="saved-origin-directions-link"
                     title="Get directions from origin to first stop"
                   >
-                    <span>Directions to {plan.items[0].name}</span>
+                    <span>Directions to {planItems[0].name}</span>
                     <IconArrowUpRight size={12} />
                   </a>
                 )}
               </div>
             )}
 
-            {plan.items.map((item, idx) => {
-              const isLast = idx === plan.items.length - 1;
-              const itemActionsData = planActions?.items.find((i) => i.item_id === item.id);
+            {planItems.map((item, idx) => {
+              const isLast = idx === planItems.length - 1;
+              const itemActionsData = planActions?.items?.find((i) => i.item_id === item.id);
               const isItemCompleted = itemActionsData?.item_status === 'completed';
               const schedStop = orchestrated?.stops?.find((s) => s.name === item.name);
               const actions: ExecutionActionRead[] =
@@ -633,7 +634,7 @@ export const PlanSummary: React.FC<PlanSummaryProps> = ({
                         <TransitionBadge
                           transition={transitions[idx]}
                           fromLabel={item.location || item.name}
-                          toLabel={plan.items[idx + 1]?.location || plan.items[idx + 1]?.name}
+                          toLabel={planItems[idx + 1]?.location || planItems[idx + 1]?.name}
                         />
                       )}
                     </div>

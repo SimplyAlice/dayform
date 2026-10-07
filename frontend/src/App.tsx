@@ -27,6 +27,11 @@ import {
   parseCandidateCost,
 } from './utils/itineraryBuilder';
 import type { ProposedItinerary, ProposedItineraryItem } from './utils/itineraryBuilder';
+import {
+  clearPersistedWorkspaceState,
+  loadPersistedWorkspaceState,
+  savePersistedWorkspaceState,
+} from './utils/persistedState';
 import type { DecisionCandidateRead, InformationCategory, PlanRead, PlanAdaptationRead } from './types/planning';
 import { IconAlertCircle, IconX, IconArrowLeft, IconPlus } from './components/Icons';
 // The Dayform visual system layers on top of the original stylesheet: the
@@ -39,16 +44,29 @@ import './styles/scenes.css';
 import './styles/execution.css';
 
 export const App: React.FC = () => {
-  const [currentPlan, setCurrentPlan] = useState<PlanRead | null>(null);
-  const [candidates, setCandidates] = useState<DecisionCandidateRead[]>([]);
-  const [proposedItinerary, setProposedItinerary] = useState<ProposedItinerary | null>(null);
-  const [isConfirmed, setIsConfirmed] = useState(false);
-  const [submittedIntent, setSubmittedIntent] = useState<string>('');
+  const [initialWorkspace] = useState(() => loadPersistedWorkspaceState());
+  const [currentPlan, setCurrentPlan] = useState<PlanRead | null>(() => initialWorkspace?.currentPlan ?? null);
+  const [candidates, setCandidates] = useState<DecisionCandidateRead[]>(() => initialWorkspace?.candidates ?? []);
+  const [proposedItinerary, setProposedItinerary] = useState<ProposedItinerary | null>(
+    () => initialWorkspace?.proposedItinerary ?? null
+  );
+  const [isConfirmed, setIsConfirmed] = useState<boolean>(() => initialWorkspace?.isConfirmed ?? false);
+  const [submittedIntent, setSubmittedIntent] = useState<string>(() => initialWorkspace?.submittedIntent ?? '');
 
   const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'library'>(() => {
     if (typeof window !== 'undefined') {
       if (window.location.pathname === '/library') return 'library';
-      if (window.location.pathname === '/workspace') return 'workspace';
+      if (window.location.pathname === '/workspace') {
+        if (initialWorkspace?.currentPlan) {
+          return 'workspace';
+        }
+        try {
+          window.history.replaceState(null, '', '/');
+        } catch {
+          // Ignore History API errors in restricted environments
+        }
+        return 'landing';
+      }
     }
     return 'landing';
   });
@@ -67,14 +85,35 @@ export const App: React.FC = () => {
       if (path === '/library') {
         setViewMode('library');
       } else if (path === '/workspace') {
-        setViewMode('workspace');
+        if (currentPlan) {
+          setViewMode('workspace');
+        } else {
+          try {
+            window.history.replaceState(null, '', '/');
+          } catch {
+            // Ignore History API errors
+          }
+          setViewMode('landing');
+        }
       } else {
         setViewMode('landing');
       }
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [currentPlan]);
+
+  useEffect(() => {
+    if (currentPlan && submittedIntent && (isConfirmed || proposedItinerary)) {
+      savePersistedWorkspaceState({
+        submittedIntent,
+        isConfirmed,
+        currentPlan,
+        candidates,
+        proposedItinerary,
+      });
+    }
+  }, [currentPlan, candidates, proposedItinerary, isConfirmed, submittedIntent]);
 
   const [isAdaptationReview, setIsAdaptationReview] = useState(false);
   const [proposedAdaptation, setProposedAdaptation] = useState<PlanAdaptationRead | null>(null);
@@ -130,9 +169,11 @@ export const App: React.FC = () => {
   ) => {
     setIsPlanning(true);
     setErrorMessage(null);
+    setCurrentPlan(null);
     setIsConfirmed(false);
     setProposedItinerary(null);
     setSubmittedIntent(intent);
+    clearPersistedWorkspaceState();
     handleSwitchView('workspace');
 
     // Scroll cleanly to the workspace view
@@ -417,6 +458,7 @@ export const App: React.FC = () => {
   };
 
   const handleStartNew = () => {
+    clearPersistedWorkspaceState();
     setCurrentPlan(null);
     setProposedItinerary(null);
     setCandidates([]);

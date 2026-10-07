@@ -360,7 +360,7 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
       .then((res) => {
         if (cancelled) return;
         setOrchestrated(res);
-        setTransitions(res.legs.map((leg) => leg.transition));
+        setTransitions(Array.isArray(res?.legs) ? res.legs.map((leg) => leg.transition) : []);
       })
       .catch((err) => {
         // Mobility is additive context: a lookup failure must not break the
@@ -470,8 +470,8 @@ export const ProposedPlan: React.FC<ProposedPlanProps> = ({
   const budgetBudgeted = budgetMax !== null;
   const costSummary = summarizeItineraryCosts(
     visibleItems.map((item) => orchestratedStop(item)?.estimated_cost ?? item.candidate.cost),
-    orchestrated?.feasibility.total_known_transition_cost,
-    orchestrated?.feasibility.has_unknown_transition_costs ?? false,
+    orchestrated?.feasibility?.total_known_transition_cost,
+    orchestrated?.feasibility?.has_unknown_transition_costs ?? false,
     budgetMax
   );
   const totalCost = costSummary.knownTotal;
