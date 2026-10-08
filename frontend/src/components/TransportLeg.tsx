@@ -202,10 +202,31 @@ export const TransportLeg: React.FC<TransportLegProps> = ({
 }) => {
   const [showCompare, setShowCompare] = useState(false);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const allOptions: MobilityOptionRead[] = leg.all_options || leg.alternatives || [];
   const selectedOption: MobilityOptionRead | undefined =
     allOptions.find((o) => o.id === leg.selected_option_id) || allOptions[0];
   const transition = leg.transition;
+
+  // Elevate parent plan card stacking context when compare popover is open
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const closestEntry = containerRef.current.closest<HTMLElement>(
+      '.journey-entry, .saved-stop-node, .saved-origin-leg-wrap'
+    );
+    if (closestEntry) {
+      if (showCompare) {
+        closestEntry.classList.add('has-popover-open');
+      } else {
+        closestEntry.classList.remove('has-popover-open');
+      }
+    }
+    return () => {
+      if (closestEntry) {
+        closestEntry.classList.remove('has-popover-open');
+      }
+    };
+  }, [showCompare]);
 
   // Close popover when clicking outside or pressing Escape
   useEffect(() => {
@@ -277,7 +298,11 @@ export const TransportLeg: React.FC<TransportLegProps> = ({
   };
 
   return (
-    <div className={`transport-leg-container ${showCompare ? 'is-popover-open' : ''}`} data-leg-index={legIndex}>
+    <div
+      ref={containerRef}
+      className={`transport-leg-container ${showCompare ? 'is-popover-open' : ''}`}
+      data-leg-index={legIndex}
+    >
       {/* Route Connector Line */}
       <div className="transport-segment-rule" aria-hidden="true" />
 

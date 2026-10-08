@@ -2882,8 +2882,23 @@
   font-family: var(--font-sans);
 }
 
+/* Elevate the active card, journey entry, or saved stop node when Compare popover is open.
+   Ensures the dropdown popover floats completely above adjacent/subsequent plan cards. */
+.journey-entry:has(.is-popover-open),
+.journey-entry.has-popover-open,
+.journey-content-block:has(.is-popover-open),
+.journey-content-block.has-popover-open,
+.saved-stop-node:has(.is-popover-open),
+.saved-stop-node.has-popover-open,
+.saved-stop-card:has(.is-popover-open),
+.saved-stop-card.has-popover-open,
+.saved-origin-leg-wrap:has(.is-popover-open),
+.saved-origin-leg-wrap.has-popover-open,
+.saved-leg-transition:has(.is-popover-open),
+.saved-leg-transition.has-popover-open,
 .transport-leg-container.is-popover-open {
-  z-index: 80;
+  position: relative !important;
+  z-index: 120 !important;
 }
 
 .transport-leg-card {
@@ -2900,7 +2915,8 @@
 }
 
 .transport-leg-card.is-popover-open {
-  z-index: 90;
+  position: relative;
+  z-index: 125 !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
 }
 
@@ -3083,7 +3099,7 @@
   border: 1px solid rgba(13, 9, 20, 0.16);
   border-radius: 10px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.2), 0 4px 12px rgba(0, 0, 0, 0.08);
-  z-index: 100;
+  z-index: 130 !important;
   padding: 14px;
   color: #0d0914;
 }
@@ -3342,8 +3358,9 @@
   .compare-transport-popover {
     right: auto;
     left: 0;
-    width: 100%;
-    max-width: calc(100vw - 32px);
+    width: min(320px, calc(100vw - 36px));
+    max-width: calc(100vw - 36px);
+    box-sizing: border-box;
   }
 }
 
