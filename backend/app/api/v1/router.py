@@ -18,13 +18,20 @@ from app.api.v1 import (
     services,
 )
 
+from app.core.config import get_settings
+
 api_router = APIRouter()
 
 
-@api_router.get("", tags=["health"], summary="API v1 root status")
+@api_router.get("", response_model=health.HealthResponse, tags=["health"], summary="API v1 root status")
 async def api_v1_root() -> health.HealthResponse:
     """Confirm API v1 router is mounted and healthy."""
-    return await health.health_check()
+    settings = get_settings()
+    return health.HealthResponse(
+        status="ok",
+        service=settings.project_name,
+        version=settings.version,
+    )
 
 
 api_router.include_router(health.router)
