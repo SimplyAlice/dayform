@@ -184,3 +184,60 @@ async def test_logout_revokes_the_refresh_token(auth_client: AsyncClient) -> Non
 
     refresh_attempt = await auth_client.post(_prefix("auth/refresh"), json={"refresh_token": refresh_token})
     assert refresh_attempt.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_anonymous_session_creates_unique_users_with_sub(auth_client: AsyncClient) -> None:
+    res_a = await auth_client.post(_prefix("auth/anonymous-session"))
+    assert res_a.status_code == 201
+    body_a = res_a.json()
+
+    res_b = await auth_client.post(_prefix("auth/anonymous-session"))
+    assert res_b.status_code == 201
+    body_b = res_b.json()
+
+    assert body_a["access_token"] != body_b["access_token"]
+    assert body_a["refresh_token"] != body_b["refresh_token"]
+
+    me_a = await auth_client.get(
+        _prefix("auth/me"), headers={"Authorization": f"Bearer {body_a['access_token']}"}
+    )
+    assert me_a.status_code == 200
+    user_a = me_a.json()
+
+    me_b = await auth_client.get(
+        _prefix("auth/me"), headers={"Authorization": f"Bearer {body_b['access_token']}"}
+    )
+    assert me_b.status_code == 200
+    user_b = me_b.json()
+
+    assert user_a["id"] != user_b["id"]
+    assert user_a["email"].startswith("anon_")
+    assert user_b["email"].startswith("anon_")
+    assert user_a["email"] != user_b["email"]
+
+
+@pytest.mark.asyncio
+async def test_anonymous_session_refresh_preserves_identity(auth_client: AsyncClient) -> None:
+    res = await auth_client.post(_prefix("auth/anonymous-session"))
+    assert res.status_code == 201
+    tokens = res.json()
+
+    me_initial = await auth_client.get(
+        _prefix("auth/me"), headers={"Authorization": f"Bearer {tokens['access_token']}"}
+    )
+    initial_user = me_initial.json()
+
+    refresh_res = await auth_client.post(
+        _prefix("auth/refresh"), json={"refresh_token": tokens["refresh_token"]}
+    )
+    assert refresh_res.status_code == 200
+    refreshed_tokens = refresh_res.json()
+
+    me_refreshed = await auth_client.get(
+        _prefix("auth/me"), headers={"Authorization": f"Bearer {refreshed_tokens['access_token']}"}
+    )
+    refreshed_user = me_refreshed.json()
+
+    assert refreshed_user["id"] == initial_user["id"]
+    assert refreshed_tokens["access_token"] != tokens["access_token"]

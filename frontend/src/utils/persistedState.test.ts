@@ -422,10 +422,10 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
         calls.push(url);
-        if (url.endsWith('/auth/login')) {
+        if (url.endsWith('/auth/anonymous-session')) {
           return new Response(
             JSON.stringify({ access_token: freshJwt, refresh_token: 'fresh-refresh' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
         return new Response(JSON.stringify({ detail: 'Unexpected URL' }), { status: 500 });
@@ -486,10 +486,10 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
           });
         }
 
-        if (url.endsWith('/auth/login')) {
+        if (url.endsWith('/auth/anonymous-session')) {
           return new Response(
             JSON.stringify({ access_token: recoveredJwt, refresh_token: 'new-refresh' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
@@ -514,10 +514,10 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
     }
   });
 
-  it('registers a fresh demo user when initial login returns 401 and persists the session', async () => {
+  it('provisions an anonymous guest session when storage is empty and persists the session', async () => {
     const storage = new MemoryStorage();
     const nowSec = Math.floor(Date.now() / 1000);
-    const freshJwt = createMockJwt({ sub: 'brand-new-user', exp: nowSec + 900 });
+    const freshJwt = createMockJwt({ sub: 'anon-user-1', exp: nowSec + 900 });
 
     const originalWindow = globalThis.window;
     const originalFetch = globalThis.fetch;
@@ -530,28 +530,13 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       });
 
       const sequence: string[] = [];
-      let loginCalls = 0;
 
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
-        if (url.endsWith('/auth/login')) {
-          loginCalls += 1;
-          sequence.push(`login-${loginCalls}`);
-          if (loginCalls === 1) {
-            return new Response(JSON.stringify({ detail: 'Invalid email or password.' }), {
-              status: 401,
-              headers: { 'Content-Type': 'application/json' },
-            });
-          }
+        if (url.endsWith('/auth/anonymous-session')) {
+          sequence.push('anonymous-session');
           return new Response(
             JSON.stringify({ access_token: freshJwt, refresh_token: 'fresh-refresh-1' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
-          );
-        }
-        if (url.endsWith('/auth/register')) {
-          sequence.push('register');
-          return new Response(
-            JSON.stringify({ id: 'brand-new-user', email: 'demo@dayform.local' }),
             { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
@@ -560,7 +545,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
 
       const token = await ensureAuthToken(false);
       assert.equal(token, freshJwt);
-      assert.deepEqual(sequence, ['login-1', 'register', 'login-2']);
+      assert.deepEqual(sequence, ['anonymous-session']);
       assert.equal(storage.has(AUTH_STORAGE_KEY), true);
     } finally {
       Object.defineProperty(globalThis, 'window', {
@@ -605,7 +590,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       const tokenFromRefresh = await ensureAuthToken(false);
       assert.equal(tokenFromRefresh, refreshedJwt);
 
-      // Part 2: Refresh fails (401) -> falls back to /auth/login
+      // Part 2: Refresh fails (401) -> falls back to /auth/anonymous-session
       savePersistedAuthSession(expiredJwt, 'revoked-refresh-tok', storage, Date.now() - 600_000);
       const calls: string[] = [];
       globalThis.fetch = (async (input: string | URL | Request) => {
@@ -617,11 +602,11 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
             { status: 401, headers: { 'Content-Type': 'application/json' } }
           );
         }
-        if (url.endsWith('/auth/login')) {
-          calls.push('login');
+        if (url.endsWith('/auth/anonymous-session')) {
+          calls.push('anonymous-session');
           return new Response(
             JSON.stringify({ access_token: fallbackLoginJwt, refresh_token: 'new-refresh-tok' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
         return new Response(null, { status: 500 });
@@ -629,7 +614,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
 
       const tokenFromFallback = await ensureAuthToken(false);
       assert.equal(tokenFromFallback, fallbackLoginJwt);
-      assert.deepEqual(calls, ['refresh', 'login']);
+      assert.deepEqual(calls, ['refresh', 'anonymous-session']);
     } finally {
       Object.defineProperty(globalThis, 'window', {
         value: originalWindow,
@@ -659,14 +644,14 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       });
 
       let planningCalls = 0;
-      let loginCalls = 0;
+      let sessionCalls = 0;
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
-        if (url.endsWith('/auth/login')) {
-          loginCalls += 1;
+        if (url.endsWith('/auth/anonymous-session')) {
+          sessionCalls += 1;
           return new Response(
             JSON.stringify({ access_token: retryJwt, refresh_token: 'ref' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
         planningCalls += 1;
@@ -691,7 +676,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       assert.equal(caughtError?.rawDetail, 'Access token is invalid or expired.');
       assert.equal(caughtError?.status, 401);
       assert.equal(planningCalls, 2);
-      assert.equal(loginCalls, 1);
+      assert.equal(sessionCalls, 1);
       assert.equal(storage.has(AUTH_STORAGE_KEY), false);
     } finally {
       Object.defineProperty(globalThis, 'window', {
@@ -732,15 +717,15 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
         writable: true,
       });
 
-      let loginCount = 0;
+      let sessionCount = 0;
       globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
         const url = String(input);
-        if (url.endsWith('/auth/login')) {
-          loginCount += 1;
+        if (url.endsWith('/auth/anonymous-session')) {
+          sessionCount += 1;
           await new Promise((r) => setTimeout(r, 15));
           return new Response(
             JSON.stringify({ access_token: newUserJwt, refresh_token: 'new-ref' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
@@ -767,7 +752,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       assert.equal(res1.ok, true);
       assert.equal(res2.ok, true);
       assert.equal(res3.ok, true);
-      assert.equal(loginCount, 1);
+      assert.equal(sessionCount, 1);
       // Workspace state belonging to the old deleted user ID was automatically cleaned up
       assert.equal(storage.has(WORKSPACE_STORAGE_KEY), false);
     } finally {
@@ -806,10 +791,10 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
         const url = String(input);
         const headers = (init?.headers ?? {}) as Record<string, string>;
 
-        if (url.endsWith('/auth/login')) {
+        if (url.endsWith('/auth/anonymous-session')) {
           return new Response(
             JSON.stringify({ access_token: validToken, refresh_token: 'active-refresh' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
@@ -923,10 +908,10 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
           );
         }
 
-        if (url.endsWith('/auth/login')) {
+        if (url.endsWith('/auth/anonymous-session')) {
           return new Response(
             JSON.stringify({ access_token: refreshedToken, refresh_token: 'ref-step2' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
 
@@ -1099,31 +1084,27 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       });
 
       const sequence: string[] = [];
-      let loginAttempts = 0;
+      let sessionAttempts = 0;
 
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
-        if (url.endsWith('/auth/login')) {
-          loginAttempts += 1;
-          sequence.push(`login-${loginAttempts}`);
-          if (loginAttempts === 1) {
+        if (url.endsWith('/auth/anonymous-session')) {
+          sessionAttempts += 1;
+          sequence.push(`session-${sessionAttempts}`);
+          if (sessionAttempts === 1) {
             return new Response('Service Unavailable', { status: 503 });
           }
           return new Response(
             JSON.stringify({ access_token: freshJwt, refresh_token: 'warm-ref' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
-        }
-        if (url.endsWith('/auth/register')) {
-          sequence.push('register-should-not-be-called');
-          return new Response('Service Unavailable', { status: 503 });
         }
         return new Response(null, { status: 404 });
       }) as typeof fetch;
 
       const token = await ensureAuthToken(false, null, 1_000);
       assert.equal(token, freshJwt);
-      assert.deepEqual(sequence, ['login-1', 'login-2']);
+      assert.deepEqual(sequence, ['session-1', 'session-2']);
     } finally {
       Object.defineProperty(globalThis, 'window', {
         value: originalWindow,
@@ -1150,15 +1131,15 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
         writable: true,
       });
 
-      let loginCalls = 0;
+      let sessionCalls = 0;
       globalThis.fetch = (async (input: string | URL | Request) => {
         const url = String(input);
-        if (url.endsWith('/auth/login')) {
-          loginCalls += 1;
+        if (url.endsWith('/auth/anonymous-session')) {
+          sessionCalls += 1;
           await new Promise((r) => setTimeout(r, 40));
           return new Response(
             JSON.stringify({ access_token: freshJwt, refresh_token: 'ref-tok' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
         return new Response(null, { status: 404 });
@@ -1171,7 +1152,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       const [, draftRes] = await Promise.all([warmupPromise, draftPromise]);
 
       assert.equal(draftRes, freshJwt);
-      assert.equal(loginCalls, 1, 'Only one auth call should be initiated');
+      assert.equal(sessionCalls, 1, 'Only one auth call should be initiated');
     } finally {
       Object.defineProperty(globalThis, 'window', {
         value: originalWindow,
@@ -1317,11 +1298,11 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
             { status: 401, headers: { 'Content-Type': 'application/json' } }
           );
         }
-        if (url.endsWith('/auth/login')) {
-          calls.push('login');
+        if (url.endsWith('/auth/anonymous-session')) {
+          calls.push('anonymous-session');
           return new Response(
             JSON.stringify({ access_token: freshLoginJwt, refresh_token: 'fresh-new-refresh' }),
-            { status: 200, headers: { 'Content-Type': 'application/json' } }
+            { status: 201, headers: { 'Content-Type': 'application/json' } }
           );
         }
         return new Response(null, { status: 500 });
@@ -1329,7 +1310,7 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
 
       const token = await ensureAuthToken(false);
       assert.equal(token, freshLoginJwt);
-      assert.deepEqual(calls, ['refresh', 'login']);
+      assert.deepEqual(calls, ['refresh', 'anonymous-session']);
 
       const persisted = loadPersistedAuthSession(storage);
       assert.equal(persisted?.refreshToken, 'fresh-new-refresh');

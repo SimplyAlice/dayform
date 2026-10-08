@@ -12,7 +12,7 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from app.application.auth.dtos import RegisterUserData, TokenPair
 from app.application.auth.errors import InvalidCredentialsError, InvalidTokenError, UserAlreadyExistsError
@@ -94,6 +94,21 @@ class AuthService:
 
         tokens = await self._issue_tokens(user_id=user.id)
         logger.info("user_logged_in", user_id=str(user.id))
+        return tokens
+
+    async def create_anonymous_session(self) -> TokenPair:
+        """Provision a unique, isolated anonymous guest user and issue tokens."""
+        synthetic_email = f"anon_{uuid4().hex}@guest.dayform.local"
+        random_secret = secrets.token_urlsafe(32)
+        password_hash = self._password_hasher.hash(random_secret)
+
+        user = await self._user_repository.create(
+            email=synthetic_email,
+            password_hash=password_hash,
+            is_anonymous=True,
+        )
+        tokens = await self._issue_tokens(user_id=user.id)
+        logger.info("anonymous_session_created", user_id=str(user.id))
         return tokens
 
     async def refresh(self, *, refresh_token: str) -> TokenPair:

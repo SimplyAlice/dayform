@@ -34,9 +34,11 @@ class SqlAlchemyUserRepository:
     async def get_by_id(self, *, user_id: UUID) -> User | None:
         return await self._session.get(User, user_id)
 
-    async def create(self, *, email: str, password_hash: str) -> User:
+    async def create(
+        self, *, email: str, password_hash: str, is_anonymous: bool = False
+    ) -> User:
         nested = await self._session.begin_nested()
-        user = User(email=email, password_hash=password_hash)
+        user = User(email=email, password_hash=password_hash, is_anonymous=is_anonymous)
         self._session.add(user)
         try:
             await self._session.flush()

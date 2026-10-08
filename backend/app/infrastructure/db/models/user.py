@@ -34,6 +34,11 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # Bcrypt hashes are 60 characters; 255 leaves headroom for a future
     # algorithm change (e.g. argon2id) without another migration.
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_anonymous: Mapped[bool] = mapped_column(
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
     plans: Mapped[list[PlanModel]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",

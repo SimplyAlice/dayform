@@ -16,10 +16,13 @@ from app.domain.value_objects.password_policy import WeakPasswordError
 
 
 class FakeUser:
-    def __init__(self, *, id_: uuid.UUID, email: str, password_hash: str) -> None:
+    def __init__(
+        self, *, id_: uuid.UUID, email: str, password_hash: str, is_anonymous: bool = False
+    ) -> None:
         self.id = id_
         self.email = email
         self.password_hash = password_hash
+        self.is_anonymous = is_anonymous
 
 
 class FakeUserRepository:
@@ -33,8 +36,12 @@ class FakeUserRepository:
     async def get_by_id(self, *, user_id: uuid.UUID) -> FakeUser | None:
         return self._users_by_id.get(user_id)
 
-    async def create(self, *, email: str, password_hash: str) -> FakeUser:
-        user = FakeUser(id_=uuid.uuid4(), email=email, password_hash=password_hash)
+    async def create(
+        self, *, email: str, password_hash: str, is_anonymous: bool = False
+    ) -> FakeUser:
+        user = FakeUser(
+            id_=uuid.uuid4(), email=email, password_hash=password_hash, is_anonymous=is_anonymous
+        )
         self._users_by_email[email] = user
         self._users_by_id[user.id] = user
         return user
@@ -241,3 +248,38 @@ async def test_get_current_user_rejects_an_invalid_token() -> None:
 
     with pytest.raises(InvalidTokenError):
         await service.get_current_user(access_token="garbage")
+
+
+@pytest.mark.asyncio
+async def test_create_anonymous_session_creates_unique_users() -> None:
+    service, user_repo, _ = _make_service()
+
+    tokens_a = await service.create_anonymous_session()
+    tokens_b = await service.create_anonymous_session()
+
+    assert tokens_a.access_token != tokens_b.access_token
+    assert tokens_a.refresh_token != tokens_b.refresh_token
+
+    user_a = await service.get_current_user(access_token=tokens_a.access_token)
+    user_b = await service.get_current_user(access_token=tokens_b.access_token)
+
+    assert user_a.id != user_b.id
+    assert user_a.is_anonymous is True
+    assert user_b.is_anonymous is True
+    assert user_a.email.startswith("anon_")
+    assert user_b.email.startswith("anon_")
+    assert user_a.email != user_b.email
+
+
+@pytest.mark.asyncio
+async def test_create_anonymous_session_refresh_preserves_user() -> None:
+    service, _, _ = _make_service()
+
+    tokens = await service.create_anonymous_session()
+    initial_user = await service.get_current_user(access_token=tokens.access_token)
+
+    refreshed_tokens = await service.refresh(refresh_token=tokens.refresh_token)
+    refreshed_user = await service.get_current_user(access_token=refreshed_tokens.access_token)
+
+    assert refreshed_user.id == initial_user.id
+    assert refreshed_tokens.access_token != tokens.access_token

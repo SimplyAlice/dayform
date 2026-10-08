@@ -58,7 +58,9 @@ class UserRepository(Protocol):
 
     async def get_by_id(self, *, user_id: UUID) -> User | None: ...
 
-    async def create(self, *, email: str, password_hash: str) -> User:
+    async def create(
+        self, *, email: str, password_hash: str, is_anonymous: bool = False
+    ) -> User:
         """Persist a new user. Callers must catch the database-level
         uniqueness violation themselves (see `SqlAlchemyUserRepository`) —
         this port doesn't hide that as its own exception type since

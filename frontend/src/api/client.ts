@@ -29,11 +29,6 @@ export interface ApiError extends Error {
   rawDetail?: string;
 }
 
-const DEMO_CREDENTIALS = {
-  email: 'demo@dayform.local',
-  password: 'DemoPassword123',
-} as const;
-
 let authToken: string | null = null;
 let refreshToken: string | null = null;
 let lastKnownUserId: string | null = null;
@@ -263,22 +258,21 @@ export async function tryRefreshSession(
   }
 }
 
-async function authenticateDemoUser(
+async function createAnonymousSession(
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<string> {
   let response: Response;
   try {
     response = await fetchWithTimeout(
-      `${API_BASE}/auth/login`,
+      `${API_BASE}/auth/anonymous-session`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(DEMO_CREDENTIALS),
       },
       timeoutMs
     );
   } catch (netErr) {
-    console.error('Network failure during authentication:', netErr);
+    console.error('Network failure during anonymous session creation:', netErr);
     if (netErr instanceof Error) {
       throw createApiError(netErr.message, (netErr as ApiError).status);
     }
@@ -286,89 +280,16 @@ async function authenticateDemoUser(
   }
 
   if (!response.ok) {
-    // Only attempt demo user registration when login indicates credentials/user not found (401/403/404)
-    if (response.status !== 401 && response.status !== 403 && response.status !== 404) {
-      let loginErrorDetail = '';
-      try {
-        const errJson = await response.json();
-        loginErrorDetail = typeof errJson.detail === 'string' ? `: ${errJson.detail}` : '';
-      } catch {
-        // body not json
-      }
-      throw createApiError(
-        `Authentication failed (${response.status})${loginErrorDetail}`,
-        response.status
-      );
-    }
-
-    // Try registering demo user first if login returned 401/403/404
-    let regRes: Response;
+    let errorDetail = '';
     try {
-      regRes = await fetchWithTimeout(
-        `${API_BASE}/auth/register`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(DEMO_CREDENTIALS),
-        },
-        timeoutMs
-      );
-    } catch (netErr) {
-      console.error('Network failure during demo registration:', netErr);
-      if (netErr instanceof Error) {
-        throw createApiError(netErr.message, (netErr as ApiError).status);
-      }
-      throw createApiError('Unable to connect to API backend.');
-    }
-
-    if (regRes.ok || regRes.status === 409 || regRes.status === 422) {
-      let retryLogin: Response;
-      try {
-        retryLogin = await fetchWithTimeout(
-          `${API_BASE}/auth/login`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(DEMO_CREDENTIALS),
-          },
-          timeoutMs
-        );
-      } catch (netErr) {
-        console.error('Network failure during login retry:', netErr);
-        if (netErr instanceof Error) {
-          throw createApiError(netErr.message, (netErr as ApiError).status);
-        }
-        throw createApiError('Unable to connect to API backend.');
-      }
-
-      if (retryLogin.ok) {
-        const data = await retryLogin.json();
-        return persistTokens(data?.access_token, data?.refresh_token);
-      }
-
-      let errorDetail = '';
-      try {
-        const errJson = await retryLogin.json();
-        errorDetail = typeof errJson.detail === 'string' ? `: ${errJson.detail}` : '';
-      } catch {
-        // body not json
-      }
-      throw createApiError(
-        `Authentication failed (${retryLogin.status})${errorDetail}`,
-        retryLogin.status
-      );
-    }
-
-    let regErrorDetail = '';
-    try {
-      const errJson = await regRes.json();
-      regErrorDetail = typeof errJson.detail === 'string' ? `: ${errJson.detail}` : '';
+      const errJson = await response.json();
+      errorDetail = typeof errJson.detail === 'string' ? `: ${errJson.detail}` : '';
     } catch {
       // body not json
     }
     throw createApiError(
-      `Authentication failed during registration (${regRes.status})${regErrorDetail}`,
-      regRes.status
+      `Anonymous session creation failed (${response.status})${errorDetail}`,
+      response.status
     );
   }
 
@@ -413,7 +334,7 @@ async function runSessionInitialization(
       return refreshResult.token;
     }
     if (refreshResult.reason === 'invalid_token') {
-      // Explicit server rejection (400/401/403/422): clear session and fall back to demo login
+      // Explicit server rejection (400/401/403/422): clear session and fall back to anonymous session
       clearPersistedAuthSession();
       authToken = null;
       refreshToken = null;
@@ -431,7 +352,7 @@ async function runSessionInitialization(
     refreshToken = null;
   }
 
-  return await authenticateDemoUser(timeoutMs);
+  return await createAnonymousSession(timeoutMs);
 }
 
 export async function ensureAuthToken(

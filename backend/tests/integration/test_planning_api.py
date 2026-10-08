@@ -554,3 +554,60 @@ async def test_separate_request_persistence_and_item_selection(
     if final_plan["budget"]["budget_maximum"] is not None:
         max_budget = Decimal(str(final_plan["budget"]["budget_maximum"]))
         assert Decimal(str(final_plan["budget"]["remaining_budget"])) == max_budget - expected_cost
+
+
+@pytest.mark.asyncio
+async def test_anonymous_users_plan_isolation_and_protection(
+    planning_client: AsyncClient,
+) -> None:
+    # 1. User A obtains anonymous session
+    res_a = await planning_client.post(_prefix("auth/anonymous-session"))
+    assert res_a.status_code == 201
+    token_a = res_a.json()["access_token"]
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+
+    # 2. User B obtains anonymous session
+    res_b = await planning_client.post(_prefix("auth/anonymous-session"))
+    assert res_b.status_code == 201
+    token_b = res_b.json()["access_token"]
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    # 3. User A creates Plan A
+    create_res = await planning_client.post(
+        _prefix("planning/plans"),
+        headers=headers_a,
+        json={"title": "User A Cape Town Day", "description": "Secret itinerary"},
+    )
+    assert create_res.status_code == 201
+    plan_a_id = create_res.json()["id"]
+
+    # 4. User A sees Plan A in their list
+    list_a = await planning_client.get(_prefix("planning/plans"), headers=headers_a)
+    assert list_a.status_code == 200
+    plan_ids_a = [p["id"] for p in list_a.json()["plans"]]
+    assert plan_a_id in plan_ids_a
+
+    # 5. User B does NOT see Plan A in their list
+    list_b = await planning_client.get(_prefix("planning/plans"), headers=headers_b)
+    assert list_b.status_code == 200
+    plan_ids_b = [p["id"] for p in list_b.json()["plans"]]
+    assert plan_a_id not in plan_ids_b
+
+    # 6. User B cannot GET Plan A by ID (must return 404)
+    get_res = await planning_client.get(_prefix(f"planning/plans/{plan_a_id}"), headers=headers_b)
+    assert get_res.status_code == 404
+
+    # 7. User B cannot PATCH Plan A (must return 404)
+    patch_res = await planning_client.patch(
+        _prefix(f"planning/plans/{plan_a_id}"),
+        headers=headers_b,
+        json={"title": "Hacked Plan Title"},
+    )
+    assert patch_res.status_code == 404
+
+    # 8. User B cannot DELETE Plan A (must return 404)
+    delete_res = await planning_client.delete(
+        _prefix(f"planning/plans/{plan_a_id}"),
+        headers=headers_b,
+    )
+    assert delete_res.status_code == 404

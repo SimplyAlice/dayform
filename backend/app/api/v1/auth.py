@@ -120,6 +120,19 @@ async def login(
 
 
 @router.post(
+    "/anonymous-session",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Provision a unique anonymous guest user and receive an access/refresh token pair",
+)
+async def anonymous_session(
+    auth_service: Annotated[AuthService, Depends(get_auth_service)],
+) -> TokenResponse:
+    tokens = await auth_service.create_anonymous_session()
+    return TokenResponse.from_token_pair(tokens)
+
+
+@router.post(
     "/refresh", response_model=TokenResponse, summary="Exchange a refresh token for a new token pair"
 )
 async def refresh(
