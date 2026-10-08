@@ -22,6 +22,8 @@ import {
   apiClient,
   ensureAuthToken,
   toUserFriendlyErrorMessage,
+  warmupBackendSession,
+  _resetClientAuthForTesting,
   type ApiError,
 } from '../api/client.ts';
 import { createPlanFromIntent, getPlanRecommendations } from '../api/planning.ts';
@@ -1129,6 +1131,217 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
         writable: true,
       });
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('deduplicates session initialization so warmup and concurrent draft await the same promise without duplicate requests', async () => {
+    _resetClientAuthForTesting();
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const freshJwt = createMockJwt({ sub: 'dedup-user', exp: nowSec + 900 });
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      let loginCalls = 0;
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/login')) {
+          loginCalls += 1;
+          await new Promise((r) => setTimeout(r, 40));
+          return new Response(
+            JSON.stringify({ access_token: freshJwt, refresh_token: 'ref-tok' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+
+      const warmupPromise = warmupBackendSession();
+      await new Promise((r) => setTimeout(r, 5));
+      const draftPromise = ensureAuthToken(false);
+
+      const [, draftRes] = await Promise.all([warmupPromise, draftPromise]);
+
+      assert.equal(draftRes, freshJwt);
+      assert.equal(loginCalls, 1, 'Only one auth call should be initiated');
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+      _resetClientAuthForTesting();
+    }
+  });
+
+  it('preserves valid refresh token in storage when /auth/refresh experiences a transient timeout', async () => {
+    _resetClientAuthForTesting();
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiredJwt = createMockJwt({ sub: 'user-refresh-timeout', exp: nowSec - 300 });
+    const preservedRefreshToken = 'preserve-this-refresh-token';
+
+    savePersistedAuthSession(expiredJwt, preservedRefreshToken, storage, Date.now() - 600_000);
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/auth/refresh')) {
+          return new Promise<Response>((_resolve, reject) => {
+            const sig = init?.signal;
+            if (sig) {
+              sig.addEventListener('abort', () => {
+                const err = new Error('The operation was aborted.');
+                err.name = 'AbortError';
+                reject(err);
+              });
+            }
+          });
+        }
+        return new Response(null, { status: 500 });
+      }) as typeof fetch;
+
+      let caughtError: ApiError | null = null;
+      try {
+        await ensureAuthToken(false, null, 30);
+      } catch (err) {
+        caughtError = err as ApiError;
+      }
+
+      assert.notEqual(caughtError, null);
+      const persisted = loadPersistedAuthSession(storage);
+      assert.equal(persisted?.refreshToken, preservedRefreshToken);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+      _resetClientAuthForTesting();
+    }
+  });
+
+  it('preserves valid refresh token in storage when /auth/refresh returns transient 503 gateway error', async () => {
+    _resetClientAuthForTesting();
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiredJwt = createMockJwt({ sub: 'user-refresh-503', exp: nowSec - 300 });
+    const preservedRefreshToken = 'preserve-503-token';
+
+    savePersistedAuthSession(expiredJwt, preservedRefreshToken, storage, Date.now() - 600_000);
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/refresh')) {
+          return new Response('Gateway Unavailable', { status: 503 });
+        }
+        return new Response(null, { status: 500 });
+      }) as typeof fetch;
+
+      let caughtError: ApiError | null = null;
+      try {
+        await ensureAuthToken(false, null, 50);
+      } catch (err) {
+        caughtError = err as ApiError;
+      }
+
+      assert.notEqual(caughtError, null);
+      const persisted = loadPersistedAuthSession(storage);
+      assert.equal(persisted?.refreshToken, preservedRefreshToken);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+      _resetClientAuthForTesting();
+    }
+  });
+
+  it('clears invalid refresh token and falls back to login when server explicitly returns 401 on /auth/refresh', async () => {
+    _resetClientAuthForTesting();
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expiredJwt = createMockJwt({ sub: 'user-refresh-401', exp: nowSec - 300 });
+    const freshLoginJwt = createMockJwt({ sub: 'user-login-recovered', exp: nowSec + 900 });
+
+    savePersistedAuthSession(expiredJwt, 'revoked-or-corrupt-refresh-tok', storage, Date.now() - 600_000);
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      const calls: string[] = [];
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/refresh')) {
+          calls.push('refresh');
+          return new Response(
+            JSON.stringify({ detail: 'Refresh token has expired or been revoked.' }),
+            { status: 401, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/auth/login')) {
+          calls.push('login');
+          return new Response(
+            JSON.stringify({ access_token: freshLoginJwt, refresh_token: 'fresh-new-refresh' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(null, { status: 500 });
+      }) as typeof fetch;
+
+      const token = await ensureAuthToken(false);
+      assert.equal(token, freshLoginJwt);
+      assert.deepEqual(calls, ['refresh', 'login']);
+
+      const persisted = loadPersistedAuthSession(storage);
+      assert.equal(persisted?.refreshToken, 'fresh-new-refresh');
+      assert.equal(persisted?.accessToken, freshLoginJwt);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+      _resetClientAuthForTesting();
     }
   });
 });

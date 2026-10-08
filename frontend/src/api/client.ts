@@ -17,7 +17,8 @@ import {
 
 const API_BASE = import.meta.env?.VITE_API_BASE_URL || '/api/v1';
 
-export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 45_000;
+export const COLD_START_TIMEOUT_MS = 90_000;
 
 export interface ApiRequestOptions extends RequestInit {
   timeoutMs?: number;
@@ -36,7 +37,7 @@ const DEMO_CREDENTIALS = {
 let authToken: string | null = null;
 let refreshToken: string | null = null;
 let lastKnownUserId: string | null = null;
-let pendingAuthPromise: Promise<string> | null = null;
+let sharedSessionPromise: Promise<string> | null = null;
 
 /**
  * Translates raw technical API, auth, or network errors into calm,
@@ -222,10 +223,14 @@ function persistTokens(newAccessToken: unknown, newRefreshToken?: unknown): stri
   return cleanAccess;
 }
 
-async function tryRefreshSession(
+export type RefreshResult =
+  | { success: true; token: string }
+  | { success: false; reason: 'invalid_token' | 'transient_error'; error?: unknown };
+
+export async function tryRefreshSession(
   tokenToRefresh: string,
-  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
-): Promise<string | null> {
+  timeoutMs: number = COLD_START_TIMEOUT_MS
+): Promise<RefreshResult> {
   try {
     const response = await fetchWithTimeout(
       `${API_BASE}/auth/refresh`,
@@ -236,16 +241,25 @@ async function tryRefreshSession(
       },
       timeoutMs
     );
-    if (!response.ok) {
-      return null;
+    if (response.ok) {
+      const data = await response.json();
+      if (typeof data?.access_token === 'string' && isValidJwtAccessToken(data.access_token.trim())) {
+        const token = persistTokens(data.access_token, data.refresh_token ?? tokenToRefresh);
+        return { success: true, token };
+      }
+      return { success: false, reason: 'invalid_token' };
     }
-    const data = await response.json();
-    if (typeof data?.access_token === 'string' && isValidJwtAccessToken(data.access_token.trim())) {
-      return persistTokens(data.access_token, data.refresh_token ?? tokenToRefresh);
+    if (
+      response.status === 400 ||
+      response.status === 401 ||
+      response.status === 403 ||
+      response.status === 422
+    ) {
+      return { success: false, reason: 'invalid_token' };
     }
-    return null;
-  } catch {
-    return null;
+    return { success: false, reason: 'transient_error' };
+  } catch (err: unknown) {
+    return { success: false, reason: 'transient_error', error: err };
   }
 }
 
@@ -362,32 +376,23 @@ async function authenticateDemoUser(
   return persistTokens(data?.access_token, data?.refresh_token);
 }
 
-export async function ensureAuthToken(
+async function runSessionInitialization(
   forceRefresh = false,
   rejectedToken?: string | null,
-  timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
+  timeoutMs: number = COLD_START_TIMEOUT_MS
 ): Promise<string> {
   if (!forceRefresh) {
     syncSessionFromStorage();
     if (authToken && isValidJwtAccessToken(authToken)) {
+      // Proactively wake up backend if needed (cold-start resilience)
+      try {
+        await fetchWithTimeout(`${API_BASE}/health`, { method: 'GET' }, timeoutMs);
+      } catch {
+        // Silent health ping failure; keep existing valid token
+      }
       return authToken;
     }
-    if (pendingAuthPromise) {
-      return pendingAuthPromise;
-    }
   } else {
-    // If an auth recovery is already in flight from a parallel request, wait for it first
-    if (pendingAuthPromise) {
-      try {
-        const recovered = await pendingAuthPromise;
-        if (recovered && recovered !== rejectedToken && isValidJwtAccessToken(recovered)) {
-          return recovered;
-        }
-      } catch {
-        // Fall through to fresh recovery attempt
-      }
-    }
-
     // Check if another concurrent request already updated storage with a fresh token
     syncSessionFromStorage();
     if (
@@ -398,64 +403,132 @@ export async function ensureAuthToken(
     ) {
       return authToken;
     }
-
-    authToken = null;
-    refreshToken = null;
-    clearPersistedAuthSession();
   }
 
-  pendingAuthPromise = (async () => {
-    try {
-      if (!forceRefresh && refreshToken) {
-        const refreshTimeoutMs = Math.min(timeoutMs, 12_000);
-        const refreshed = await tryRefreshSession(refreshToken, refreshTimeoutMs);
-        if (refreshed) {
-          return refreshed;
-        }
-      }
+  // Session needs authentication or refresh.
+  // Prefer /auth/refresh (0.485s, SHA-256) over bcrypt login (2.3s+ 100% CPU on Render).
+  if (refreshToken) {
+    const refreshResult = await tryRefreshSession(refreshToken, timeoutMs);
+    if (refreshResult.success) {
+      return refreshResult.token;
+    }
+    if (refreshResult.reason === 'invalid_token') {
+      // Explicit server rejection (400/401/403/422): clear session and fall back to demo login
       clearPersistedAuthSession();
       authToken = null;
       refreshToken = null;
-      return await authenticateDemoUser(timeoutMs);
+    } else {
+      // Transient error (502, 503, 504, timeout, network failure):
+      // PRESERVE refresh token in storage!
+      throw createApiError(
+        'Dayform is taking a little longer than usual. Please try again.',
+        503
+      );
+    }
+  } else {
+    clearPersistedAuthSession();
+    authToken = null;
+    refreshToken = null;
+  }
+
+  return await authenticateDemoUser(timeoutMs);
+}
+
+export async function ensureAuthToken(
+  forceRefresh = false,
+  rejectedToken?: string | null,
+  timeoutMs: number = COLD_START_TIMEOUT_MS
+): Promise<string> {
+  if (!forceRefresh) {
+    syncSessionFromStorage();
+    if (authToken && isValidJwtAccessToken(authToken)) {
+      if (sharedSessionPromise) {
+        return sharedSessionPromise;
+      }
+      return authToken;
+    }
+  }
+
+  // If a session initialization is already in flight, await it first
+  if (sharedSessionPromise) {
+    try {
+      const recovered = await sharedSessionPromise;
+      if (
+        !forceRefresh ||
+        (recovered && recovered !== rejectedToken && isValidJwtAccessToken(recovered))
+      ) {
+        return recovered;
+      }
+    } catch {
+      // In-flight initialization errored; fall through to fresh attempt
+    }
+  }
+
+  if (forceRefresh) {
+    // Check if another concurrent request already updated storage with a fresh token
+    syncSessionFromStorage();
+    if (
+      rejectedToken &&
+      authToken &&
+      authToken !== rejectedToken &&
+      isValidJwtAccessToken(authToken)
+    ) {
+      return authToken;
+    }
+    authToken = null;
+  }
+
+  sharedSessionPromise = (async () => {
+    try {
+      return await runSessionInitialization(forceRefresh, rejectedToken, timeoutMs);
     } finally {
-      pendingAuthPromise = null;
+      sharedSessionPromise = null;
     }
   })();
 
-  return pendingAuthPromise;
+  return sharedSessionPromise;
 }
-
-let warmupInFlight: Promise<void> | null = null;
 
 /**
  * Proactively wakes up the backend service and ensures a valid auth token
  * in the background while the user is on the landing page or typing their
  * intention, eliminating cold-start and bcrypt login latency on submit.
+ *
+ * Utilizes the shared session initialization promise so concurrent
+ * user planning requests await the same in-flight operation without
+ * spawning duplicate requests against cold Render instances.
  */
-export function warmupBackendSession(): Promise<void> {
+export function warmupBackendSession(): Promise<string | void> {
   if (typeof window === 'undefined') {
     return Promise.resolve();
   }
-  if (warmupInFlight) {
-    return warmupInFlight;
-  }
-
-  warmupInFlight = (async () => {
-    try {
-      syncSessionFromStorage();
-      if (authToken && isValidJwtAccessToken(authToken)) {
-        await fetchWithTimeout(`${API_BASE}/health`, { method: 'GET' }, 25_000);
-      } else {
-        await ensureAuthToken(false, null, 45_000);
-      }
-    } catch {
-      // Silent background warmup — foreground user actions will retry cleanly if needed
-    } finally {
-      warmupInFlight = null;
+  syncSessionFromStorage();
+  if (authToken && isValidJwtAccessToken(authToken)) {
+    if (sharedSessionPromise) {
+      return sharedSessionPromise;
     }
-  })();
+    sharedSessionPromise = (async () => {
+      try {
+        await fetchWithTimeout(`${API_BASE}/health`, { method: 'GET' }, COLD_START_TIMEOUT_MS);
+      } catch {
+        // Silent health ping failure
+      } finally {
+        sharedSessionPromise = null;
+      }
+      return authToken || '';
+    })();
+    return sharedSessionPromise;
+  }
+  return ensureAuthToken(false, null, COLD_START_TIMEOUT_MS).catch(() => {
+    // Silent background warmup — foreground user actions will retry cleanly if needed
+  });
+}
 
-  return warmupInFlight;
+export function _resetClientAuthForTesting(): void {
+  authToken = null;
+  refreshToken = null;
+  lastKnownUserId = null;
+  sharedSessionPromise = null;
 }
 
 export async function apiClient<T>(

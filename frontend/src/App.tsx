@@ -132,6 +132,32 @@ export const App: React.FC = () => {
   const [previousItinerary, setPreviousItinerary] = useState<ProposedItinerary | null>(null);
 
   const [isPlanning, setIsPlanning] = useState(false);
+  const [planningStartedAt, setPlanningStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    if (!isPlanning) return;
+    const interval = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isPlanning]);
+
+  const planningElapsedSeconds =
+    isPlanning && planningStartedAt ? Math.floor((now - planningStartedAt) / 1000) : 0;
+
+  const startPlanning = useCallback(() => {
+    const current = Date.now();
+    setPlanningStartedAt(current);
+    setNow(current);
+    setIsPlanning(true);
+  }, []);
+
+  const stopPlanning = useCallback(() => {
+    setIsPlanning(false);
+    setPlanningStartedAt(null);
+  }, []);
+
   const [isSaving, setIsSaving] = useState(false);
   const [isTweaking, setIsTweaking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -178,7 +204,7 @@ export const App: React.FC = () => {
     startTime?: string,
     transportPreference?: string
   ) => {
-    setIsPlanning(true);
+    startPlanning();
     setErrorMessage(null);
     setCurrentPlan(null);
     setIsConfirmed(false);
@@ -233,14 +259,14 @@ export const App: React.FC = () => {
       const rawMsg = err instanceof Error ? err.message : '';
       setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
     } finally {
-      setIsPlanning(false);
+      stopPlanning();
     }
   };
 
   // Recoverable retry when Step 1 or Step 2 of plan creation fails
   const handleRetryPlanning = async () => {
     if (currentPlan && !proposedItinerary) {
-      setIsPlanning(true);
+      startPlanning();
       setErrorMessage(null);
       try {
         const recsResponse = await getPlanRecommendations(currentPlan.id);
@@ -266,7 +292,7 @@ export const App: React.FC = () => {
         const rawMsg = err instanceof Error ? err.message : '';
         setErrorMessage(toUserFriendlyErrorMessage(rawMsg));
       } finally {
-        setIsPlanning(false);
+        stopPlanning();
       }
       return;
     }
@@ -491,7 +517,7 @@ export const App: React.FC = () => {
   };
 
   const handleOpenSavedPlan = async (planId: string) => {
-    setIsPlanning(true);
+    startPlanning();
     setErrorMessage(null);
     try {
       const plan = await getPlan(planId);
@@ -530,7 +556,7 @@ export const App: React.FC = () => {
       console.error('Failed to open saved plan:', err);
       setErrorMessage('Could not open the selected plan.');
     } finally {
-      setIsPlanning(false);
+      stopPlanning();
     }
   };
 
@@ -689,31 +715,47 @@ export const App: React.FC = () => {
                 ones the engine is genuinely running, in the order it runs them,
                 so this is a caption on real work rather than a reassuring
                 animation. Nothing is claimed that is not about to be shown. */}
-            {isPlanning && (
-              <StageFrame
-                stage={3}
-                className="df-thinking-scene"
-                title="One moment."
-                lede="Reading what you actually meant, then checking it against what is really open, really there, and really within reach."
-              >
-                <ol className="df-thinking-steps">
-                  {[
-                    { n: '01', t: 'Reading the intention', d: 'Pulling out the time, the place, the people, the money and the mood.' },
-                    { n: '02', t: 'Finding real places', d: 'Searching what is genuinely nearby and genuinely open.' },
-                    { n: '03', t: 'Checking them against you', d: 'Hours, area, budget and what you asked for, one by one.' },
-                    { n: '04', t: 'Putting them in order', d: 'Working out the travel between each one, then building the day around it.' },
-                  ].map((step) => (
-                    <li key={step.n} className="df-thinking-step">
-                      <span className="df-thinking-step-n">{step.n}</span>
-                      <span className="df-thinking-step-body">
-                        <span className="df-thinking-step-t">{step.t}</span>
-                        <span className="df-thinking-step-d">{step.d}</span>
-                      </span>
-                    </li>
-                  ))}
-                </ol>
-              </StageFrame>
-            )}
+            {isPlanning && (() => {
+              let planningTitle = 'One moment.';
+              let planningLede =
+                'Reading what you actually meant, then checking it against what is really open, really there, and really within reach.';
+
+              if (planningElapsedSeconds >= 20) {
+                planningTitle = 'Dayform is taking a little longer than usual.';
+                planningLede =
+                  'The service is assembling verified places and routes from scratch. Hang tight…';
+              } else if (planningElapsedSeconds >= 4) {
+                planningTitle = 'Waking Dayform up.';
+                planningLede =
+                  'This can take a little longer the first time after being idle. Checking what is really open, really there, and really within reach.';
+              }
+
+              return (
+                <StageFrame
+                  stage={3}
+                  className="df-thinking-scene"
+                  title={planningTitle}
+                  lede={planningLede}
+                >
+                  <ol className="df-thinking-steps">
+                    {[
+                      { n: '01', t: 'Reading the intention', d: 'Pulling out the time, the place, the people, the money and the mood.' },
+                      { n: '02', t: 'Finding real places', d: 'Searching what is genuinely nearby and genuinely open.' },
+                      { n: '03', t: 'Checking them against you', d: 'Hours, area, budget and what you asked for, one by one.' },
+                      { n: '04', t: 'Putting them in order', d: 'Working out the travel between each one, then building the day around it.' },
+                    ].map((step) => (
+                      <li key={step.n} className="df-thinking-step">
+                        <span className="df-thinking-step-n">{step.n}</span>
+                        <span className="df-thinking-step-body">
+                          <span className="df-thinking-step-t">{step.t}</span>
+                          <span className="df-thinking-step-d">{step.d}</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                </StageFrame>
+              );
+            })()}
 
             {/* Error Recovery State in Workspace (Phase 9) */}
             {!isPlanning && errorMessage && (!currentPlan || (!proposedItinerary && !isConfirmed)) && (
