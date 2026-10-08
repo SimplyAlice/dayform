@@ -19,6 +19,14 @@ from app.api.v1 import (
 )
 
 api_router = APIRouter()
+
+
+@api_router.get("", tags=["health"], summary="API v1 root status")
+async def api_v1_root() -> health.HealthResponse:
+    """Confirm API v1 router is mounted and healthy."""
+    return await health.health_check()
+
+
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(jobs.router)

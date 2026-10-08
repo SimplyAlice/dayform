@@ -91,38 +91,75 @@ function hasStorageAvailable(): boolean {
   }
 }
 
+const TRANSIENT_GATEWAY_STATUSES = new Set([502, 503, 504]);
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchWithTimeout(
   url: string,
   init: RequestInit = {},
   timeoutMs: number = DEFAULT_REQUEST_TIMEOUT_MS
 ): Promise<Response> {
-  const controller = new AbortController();
-  const externalSignal = init.signal;
-  if (externalSignal) {
-    if (externalSignal.aborted) {
-      controller.abort();
-    } else {
-      externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+  const maxAttempts = 3;
+  const retryDelaysMs = timeoutMs >= 5_000 ? [1_200, 2_500] : [10, 20];
+  const startedAt = Date.now();
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const elapsed = Date.now() - startedAt;
+    const remainingTimeoutMs = Math.max(timeoutMs - elapsed, 15);
+    const controller = new AbortController();
+    const externalSignal = init.signal;
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+    }
+
+    const timer = setTimeout(() => controller.abort(), remainingTimeoutMs);
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+      });
+
+      if (
+        TRANSIENT_GATEWAY_STATUSES.has(response.status) &&
+        attempt < maxAttempts - 1 &&
+        !externalSignal?.aborted
+      ) {
+        const delay = retryDelaysMs[attempt] ?? 1_500;
+        if (Date.now() - startedAt + delay < timeoutMs) {
+          await sleepMs(delay);
+          continue;
+        }
+      }
+
+      return response;
+    } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw createApiError('The planning service took too long to respond.', 408);
+      }
+      if (attempt < maxAttempts - 1 && !externalSignal?.aborted) {
+        const delay = retryDelaysMs[attempt] ?? 1_500;
+        if (Date.now() - startedAt + delay < timeoutMs) {
+          await sleepMs(delay);
+          continue;
+        }
+      }
+      if (err instanceof Error) {
+        throw createApiError(err.message);
+      }
+      throw createApiError('Unable to connect to API backend.');
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-  } catch (err: unknown) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw createApiError('The planning service took too long to respond.', 408);
-    }
-    if (err instanceof Error) {
-      throw createApiError(err.message);
-    }
-    throw createApiError('Unable to connect to API backend.');
-  } finally {
-    clearTimeout(timer);
-  }
+  throw createApiError('Unable to connect to API backend.');
 }
 
 function syncSessionFromStorage(): void {
@@ -229,13 +266,28 @@ async function authenticateDemoUser(
   } catch (netErr) {
     console.error('Network failure during authentication:', netErr);
     if (netErr instanceof Error) {
-      throw createApiError(netErr.message);
+      throw createApiError(netErr.message, (netErr as ApiError).status);
     }
     throw createApiError('Unable to connect to API backend.');
   }
 
   if (!response.ok) {
-    // Try registering demo user first if login failed
+    // Only attempt demo user registration when login indicates credentials/user not found (401/403/404)
+    if (response.status !== 401 && response.status !== 403 && response.status !== 404) {
+      let loginErrorDetail = '';
+      try {
+        const errJson = await response.json();
+        loginErrorDetail = typeof errJson.detail === 'string' ? `: ${errJson.detail}` : '';
+      } catch {
+        // body not json
+      }
+      throw createApiError(
+        `Authentication failed (${response.status})${loginErrorDetail}`,
+        response.status
+      );
+    }
+
+    // Try registering demo user first if login returned 401/403/404
     let regRes: Response;
     try {
       regRes = await fetchWithTimeout(
@@ -250,7 +302,7 @@ async function authenticateDemoUser(
     } catch (netErr) {
       console.error('Network failure during demo registration:', netErr);
       if (netErr instanceof Error) {
-        throw createApiError(netErr.message);
+        throw createApiError(netErr.message, (netErr as ApiError).status);
       }
       throw createApiError('Unable to connect to API backend.');
     }
@@ -270,7 +322,7 @@ async function authenticateDemoUser(
       } catch (netErr) {
         console.error('Network failure during login retry:', netErr);
         if (netErr instanceof Error) {
-          throw createApiError(netErr.message);
+          throw createApiError(netErr.message, (netErr as ApiError).status);
         }
         throw createApiError('Unable to connect to API backend.');
       }
@@ -355,7 +407,8 @@ export async function ensureAuthToken(
   pendingAuthPromise = (async () => {
     try {
       if (!forceRefresh && refreshToken) {
-        const refreshed = await tryRefreshSession(refreshToken, timeoutMs);
+        const refreshTimeoutMs = Math.min(timeoutMs, 12_000);
+        const refreshed = await tryRefreshSession(refreshToken, refreshTimeoutMs);
         if (refreshed) {
           return refreshed;
         }
@@ -370,6 +423,39 @@ export async function ensureAuthToken(
   })();
 
   return pendingAuthPromise;
+}
+
+let warmupInFlight: Promise<void> | null = null;
+
+/**
+ * Proactively wakes up the backend service and ensures a valid auth token
+ * in the background while the user is on the landing page or typing their
+ * intention, eliminating cold-start and bcrypt login latency on submit.
+ */
+export function warmupBackendSession(): Promise<void> {
+  if (typeof window === 'undefined') {
+    return Promise.resolve();
+  }
+  if (warmupInFlight) {
+    return warmupInFlight;
+  }
+
+  warmupInFlight = (async () => {
+    try {
+      syncSessionFromStorage();
+      if (authToken && isValidJwtAccessToken(authToken)) {
+        await fetchWithTimeout(`${API_BASE}/health`, { method: 'GET' }, 25_000);
+      } else {
+        await ensureAuthToken(false, null, 45_000);
+      }
+    } catch {
+      // Silent background warmup — foreground user actions will retry cleanly if needed
+    } finally {
+      warmupInFlight = null;
+    }
+  })();
+
+  return warmupInFlight;
 }
 
 export async function apiClient<T>(

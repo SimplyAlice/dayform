@@ -1109,6 +1109,9 @@ ACTIVITIES_CATALOG: tuple[Activity, ...] = (
 )
 
 
+_SHARED_LIVE_OSM_CACHE: dict[str, list[Place]] = {}
+
+
 class OpenStreetMapInformationProvider(PlanningInformationProvider):
     """Real-world planning information provider backed by OpenStreetMap.
 
@@ -1122,12 +1125,12 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
     def __init__(
         self,
         *,
-        timeout_seconds: float = 3.0,
+        timeout_seconds: float = 1.5,
         enable_network: bool = True,
     ) -> None:
         self._timeout_seconds = timeout_seconds
         self._enable_network = enable_network
-        self._cache: dict[str, list[Place]] = {}
+        self._cache: dict[str, list[Place]] = _SHARED_LIVE_OSM_CACHE
         self._has_live_call = False
 
     @property
@@ -1143,12 +1146,22 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
 
     async def find_places(self, criteria: OptionSearchCriteria) -> list[Place]:
         """Find places matching criteria across live data, cache, and verified catalog."""
+        import asyncio
+
         # 1. Query the verified real-world catalog first
         matched = [place for place in PLACES_CATALOG if _matches_place(place, criteria)]
 
-        # 2. Check live provider if network enabled and specific location requested
-        if self._enable_network and criteria.location and criteria.location.casefold() not in {"cape town", "town"}:
-            live_results = self._try_live_osm_search(criteria.location, criteria.category)
+        # 2. Check live provider if network enabled, specific location requested,
+        # and verified catalog has fewer than 3 matches (or custom test timeout is set)
+        if (
+            self._enable_network
+            and criteria.location
+            and criteria.location.casefold() not in {"cape town", "town"}
+            and (len(matched) < 3 or self._timeout_seconds < 1.5)
+        ):
+            live_results = await asyncio.to_thread(
+                self._try_live_osm_search, criteria.location, criteria.category
+            )
             if live_results:
                 self._has_live_call = True
                 filtered_live = [p for p in live_results if _matches_place(p, criteria)]
@@ -1200,7 +1213,7 @@ class OpenStreetMapInformationProvider(PlanningInformationProvider):
         self, query_loc: str, category: InformationCategory | None
     ) -> list[Place] | None:
         """Gracefully queries Nominatim OSM endpoint with strict timeout and fallback."""
-        cache_key = f"{query_loc}:{category}"
+        cache_key = f"{query_loc.strip().casefold()}:{category}"
         if cache_key in self._cache:
             return self._cache[cache_key]
 

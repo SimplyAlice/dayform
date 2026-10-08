@@ -20,7 +20,7 @@ import {
   applyPlanAdaptation,
   updatePlan,
 } from './api/planning';
-import { toUserFriendlyErrorMessage } from './api/client';
+import { toUserFriendlyErrorMessage, warmupBackendSession } from './api/client';
 import {
   buildProposedItinerary,
   getCategoryIcon,
@@ -59,6 +59,10 @@ export const App: React.FC = () => {
     startTime?: string;
     transportPreference?: string;
   } | null>(null);
+
+  useEffect(() => {
+    void warmupBackendSession();
+  }, []);
 
   const [viewMode, setViewMode] = useState<'landing' | 'workspace' | 'library'>(() => {
     if (typeof window !== 'undefined') {

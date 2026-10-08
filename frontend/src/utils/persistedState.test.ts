@@ -1080,4 +1080,55 @@ describe('API Client Auth Recovery (ensureAuthToken & apiClient)', () => {
       "We couldn't finish building this plan. Your request is still safe — try again."
     );
   });
+
+  it('automatically retries transient 503 Service Unavailable during cold starts without triggering registration', async () => {
+    const storage = new MemoryStorage();
+    const nowSec = Math.floor(Date.now() / 1000);
+    const freshJwt = createMockJwt({ sub: 'warm-user', exp: nowSec + 900 });
+
+    const originalWindow = globalThis.window;
+    const originalFetch = globalThis.fetch;
+
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        value: { localStorage: storage },
+        configurable: true,
+        writable: true,
+      });
+
+      const sequence: string[] = [];
+      let loginAttempts = 0;
+
+      globalThis.fetch = (async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/auth/login')) {
+          loginAttempts += 1;
+          sequence.push(`login-${loginAttempts}`);
+          if (loginAttempts === 1) {
+            return new Response('Service Unavailable', { status: 503 });
+          }
+          return new Response(
+            JSON.stringify({ access_token: freshJwt, refresh_token: 'warm-ref' }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        if (url.endsWith('/auth/register')) {
+          sequence.push('register-should-not-be-called');
+          return new Response('Service Unavailable', { status: 503 });
+        }
+        return new Response(null, { status: 404 });
+      }) as typeof fetch;
+
+      const token = await ensureAuthToken(false, null, 1_000);
+      assert.equal(token, freshJwt);
+      assert.deepEqual(sequence, ['login-1', 'login-2']);
+    } finally {
+      Object.defineProperty(globalThis, 'window', {
+        value: originalWindow,
+        configurable: true,
+        writable: true,
+      });
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

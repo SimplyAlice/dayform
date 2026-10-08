@@ -65,6 +65,17 @@ const EDITORIAL_PROMPTS: ExamplePrompt[] = [
   },
 ];
 
+function inferTimeChoiceFromIntent(text: string): 'morning' | 'afternoon' | 'evening' {
+  const lower = (text || '').toLowerCase();
+  if (/\b(dinner|evening|tonight|night|date night|sunset|late|cocktails|bars?)\b/.test(lower)) {
+    return 'evening';
+  }
+  if (/\b(lunch|afternoon|midday|matinee)\b/.test(lower)) {
+    return 'afternoon';
+  }
+  return 'morning';
+}
+
 export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
   ({ onSubmit, isLoading, defaultValue = '' }, ref) => {
     const [intent, setIntent] = useState(defaultValue);
@@ -73,7 +84,9 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
     const [transportChoice, setTransportChoice] = useState<string>('');
     const [dateChoice, setDateChoice] = useState<'today' | 'tomorrow' | 'custom'>('today');
     const [customDate, setCustomDate] = useState(() => new Date().toISOString().split('T')[0]);
-    const [timeChoice, setTimeChoice] = useState<'morning' | 'afternoon' | 'evening' | 'custom'>('morning');
+    const [timeChoice, setTimeChoice] = useState<'morning' | 'afternoon' | 'evening' | 'custom'>(() =>
+      inferTimeChoiceFromIntent(defaultValue)
+    );
     const [customTime, setCustomTime] = useState('10:00');
     const [isLocating, setIsLocating] = useState(false);
     const [locationError, setLocationError] = useState<string | null>(null);
@@ -93,6 +106,7 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
       },
       setIntent: (text: string) => {
         setIntent(text);
+        setTimeChoice(inferTimeChoiceFromIntent(text));
         setStep('intent');
         if (textareaRef.current) {
           textareaRef.current.focus();
@@ -134,8 +148,12 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
         }
       }
 
-      baseDate.setHours(hour, minute, 0, 0);
-      return baseDate.toISOString();
+      const yyyy = String(baseDate.getFullYear());
+      const mm = String(baseDate.getMonth() + 1).padStart(2, '0');
+      const dd = String(baseDate.getDate()).padStart(2, '0');
+      const hh = String(hour).padStart(2, '0');
+      const min = String(minute).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}T${hh}:${min}:00`;
     };
 
     const handleSubmit = (e?: React.FormEvent) => {
@@ -143,6 +161,7 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
       const trimmed = intent.trim();
       if (!trimmed || isLoading) return;
 
+      setTimeChoice(inferTimeChoiceFromIntent(trimmed));
       setLocationError(null);
       setStep('decision');
       setTimeout(() => locationInputRef.current?.focus(), 100);
@@ -190,6 +209,7 @@ export const IntentInput = forwardRef<IntentInputHandle, IntentInputProps>(
 
     const handleSelectPrompt = (promptText: string) => {
       setIntent(promptText);
+      setTimeChoice(inferTimeChoiceFromIntent(promptText));
       setLocationError(null);
       setStep('decision');
       setTimeout(() => locationInputRef.current?.focus(), 100);

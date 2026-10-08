@@ -43,25 +43,27 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     )
     if settings.environment is Environment.PRODUCTION:
         import os
-        import subprocess
-        import sys
 
-        alembic_dir = "backend" if os.path.exists("backend/alembic.ini") else "."
-        if os.path.exists(os.path.join(alembic_dir, "alembic.ini")):
-            try:
-                res = subprocess.run(
-                    [sys.executable, "-m", "alembic", "upgrade", "head"],
-                    cwd=alembic_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=120,
-                )
-                if res.returncode == 0:
-                    logger.info("database_migrations_applied", output=res.stdout)
-                else:
-                    logger.warning("database_migration_failed", error=res.stderr)
-            except Exception as exc:
-                logger.warning("database_migration_exception", error=str(exc))
+        if os.environ.get("RUN_MIGRATIONS_ON_STARTUP", "").lower() in {"1", "true", "yes"}:
+            import subprocess
+            import sys
+
+            alembic_dir = "backend" if os.path.exists("backend/alembic.ini") else "."
+            if os.path.exists(os.path.join(alembic_dir, "alembic.ini")):
+                try:
+                    res = subprocess.run(
+                        [sys.executable, "-m", "alembic", "upgrade", "head"],
+                        cwd=alembic_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                    )
+                    if res.returncode == 0:
+                        logger.info("database_migrations_applied", output=res.stdout)
+                    else:
+                        logger.warning("database_migration_failed", error=res.stderr)
+                except Exception as exc:
+                    logger.warning("database_migration_exception", error=str(exc))
     yield
     logger.info("application_shutdown")
     await dispose_engine()
